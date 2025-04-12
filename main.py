@@ -143,6 +143,8 @@ def evaluate_model(model, x_test, y_test):
 
     return accuracy, feature_importances
 
+#Phase 4
+
 def preprocess_input(user_data, feature_names):
     if not isinstance(user_data, pd.DataFrame):
         user_data = pd.DataFrame(user_data)
@@ -214,6 +216,88 @@ def preprocess_input(user_data, feature_names):
 
 
 
+def generate_recommendations(model, user_data, feature_names):
+    """
+    Generate recommendations for a single user
+    """
+    # Preprocess the input data
+    processed_data = preprocess_input(user_data, feature_names)
+
+    # Generate recommendation
+    recommendation = model.predict(processed_data)[0]
+
+    # Get confidence scores (probabilities) for recommendations
+    probabilities = model.predict_proba(processed_data)
+    confidence = np.max(probabilities)
+
+    return recommendation, confidence
+
+
+def explain_recommendation(recommendation, user_data):
+    """
+    Generate human-readable explanation for a recommendation
+    """
+    explanation = f"Based on your profile, we recommend: {recommendation}\n\n"
+
+    # Add specific explanations based on user attributes
+    health_conditions = []
+    if user_data.get('Hypertension', 0) == 1:
+        health_conditions.append("hypertension")
+    if user_data.get('Diabetes', 0) == 1:
+        health_conditions.append("diabetes")
+
+    if health_conditions:
+        explanation += f"This recommendation takes into account your health conditions: {', '.join(health_conditions)}.\n"
+
+    bmi = user_data.get('BMI', None)
+    if bmi is not None:
+        if bmi < 18.5:
+            explanation += "As your BMI indicates you're underweight, we've focused on nutrition that supports healthy weight gain.\n"
+        elif bmi >= 25 and bmi < 30:
+            explanation += "As your BMI indicates you're overweight, we've included elements to support healthy weight management.\n"
+        elif bmi >= 30:
+            explanation += "As your BMI indicates obesity, we've prioritized gentle exercise options and nutritional guidance.\n"
+
+    age = user_data.get('Age', None)
+    if age is not None:
+        if age < 18:
+            explanation += "This plan is tailored for teenagers, focusing on development and establishing healthy habits.\n"
+        elif age > 65:
+            explanation += "This plan is adapted for seniors, emphasizing low-impact activities and joint health.\n"
+
+    fitness_goal = user_data.get('Fitness Goal', None)
+    if fitness_goal:
+        explanation += f"Your goal of '{fitness_goal}' has shaped the core of this recommendation.\n"
+
+    return explanation
+
+
+def safety_check(recommendation, user_data):
+    """
+    Perform safety checks on recommendations based on health conditions
+    """
+    warnings = []
+
+    # Check for high-intensity recommendations for people with heart conditions
+    if (user_data.get('Hypertension', 0) == 1 and
+            user_data.get('Age', 0) > 60 and
+            "high intensity" in recommendation.lower()):
+        warnings.append(
+            "CAUTION: High-intensity exercises should be approached with care given your hypertension. Consult your doctor.")
+
+    # Check for high-impact exercises for obese individuals
+    if (user_data.get('BMI', 0) > 35 and
+            any(x in recommendation.lower() for x in ["jumping", "running", "high impact"])):
+        warnings.append(
+            "CAUTION: High-impact exercises may strain your joints. Consider low-impact alternatives like swimming.")
+
+    # Check for diabetes-specific nutritional guidance
+    if (user_data.get('Diabetes', 0) == 1 and
+            not any(x in recommendation.lower() for x in ["low carb", "low sugar", "glycemic index"])):
+        warnings.append(
+            "NOTE: Since you have diabetes, pay special attention to carbohydrate intake and monitor blood sugar levels.")
+
+    return warnings
 
 def get_user_input():
 
@@ -346,7 +430,80 @@ def get_user_input():
     return user_data
 
 
-#Final Main Method
-if __name__ == "__main__":
+def build_recommendation_system(data_path):
+    """
+    Main function to build and test the recommendation system
+    """
+    print("Building Health Recommendation System")
+    print("=====================================")
+
+    # Phase 1: Load and clean data
+    df = load_and_clean_data(data_path)
+
+    # Phase 2: Feature engineering
+    df = feature_engineering(df)
+
+    # Phase 3: Model development
+    X_train, X_test, y_train, y_test = prepare_training_data(df)
+    if X_train is None:
+        return None, None
+
+    model = train_model(X_train, y_train)
+    accuracy, feature_importance = evaluate_model(model, X_test, y_test)
+
+    # Return model and feature names for use in the recommendation pipeline
+    return model, X_train.columns.tolist()
+
+
+def get_recommendation_for_user(model, feature_names, user_data):
+    """
+    Generate and explain recommendations for a single user
+    """
+    # Generate recommendation
+    recommendation, confidence = generate_recommendations(model, user_data, feature_names)
+
+    # Explain recommendation
+    explanation = explain_recommendation(recommendation, user_data)
+
+    # Safety check
+    warnings = safety_check(recommendation, user_data)
+
+    # Combine results
+    result = {
+        'recommendation': recommendation,
+        'confidence': confidence,
+        'explanation': explanation,
+        'warnings': warnings
+    }
+
+    return result
+
+
+# Example usage
+if _name_ == "_main_":
     # Example path - replace with your actual file path
     data_path = "./Dataset/gym recommendation (1).csv"
+
+    # Build the recommendation system
+    model, feature_names = build_recommendation_system(data_path)
+
+    if model is not None:
+        # Get user input instead of using sample data
+        user_data = get_user_input()
+
+        # Get recommendation
+        result = get_recommendation_for_user(model, feature_names, user_data)
+
+        # Display results
+        print("\nRecommendation Results:")
+        print("=====================")
+        print(f"Recommendation: {result['recommendation']}")
+        print(f"Confidence: {result['confidence']:.2f}")
+        print(f"\nExplanation:\n{result['explanation']}")
+
+        if result['warnings']:
+            print("\nWarnings:")
+            for warning in result['warnings']:
+                print(f"- {warning}")
+    else:
+        print("Failed to build recommendation system. Please check your data.")
