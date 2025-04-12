@@ -47,8 +47,6 @@ def load_and_clean_data(file_path):
 
     return df
 
-
-
 #PHASR 2: FEATURE ENGINEERING
 
 def  feature_engineering(df):
@@ -201,136 +199,151 @@ def preprocess_input(user_data, feature_names):
                 dummies = pd.get_dummies(user_data[col], prefix=col)
                 user_data = pd.concat([user_data, dummies], axis=1)
                 user_data = user_data.drop(col, axis=1)
+                processed_data = pd.DataFrame(columns=feature_names)
 
-def get_user_input():
+                for feature in feature_names:
+                    if feature in user_data.columns:
+                        processed_data[feature] = user_data[feature]
+                    else:
+                        processed_data[feature] = 0  # Default value for missing features
 
-    user_data = {}
-    while True:
-        gender = input("Enter your gender (Male/Female): ").strip().capitalize()
-        if gender in ['Male', 'Female']:
-            user_data['Sex'] = 1 if gender == 'Male' else 0
-            break
-        else:
-            print("Invalid input. Please enter 'Male' or 'Female'.")
+                # Convert to float to ensure compatibility with the model
+                processed_data = processed_data.astype(float)
 
-    # Get age input
-    while True:
-        try:
-            age = int(input("Enter your age (years): "))
-            if 10 <= age <= 100:
-                user_data['Age'] = age
-                break
-            else:
-                print("Please enter a valid age between 10 and 100.")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
+                return processed_data
 
-    # Get height input
-    while True:
-        try:
-            height = float(input("Enter your height (cm): "))
-            if 100 <= height <= 220:
-                user_data['Height'] = height
-                break
-            else:
-                print("Please enter a valid height between 100 and 220 cm.")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
 
-    # Get weight input
-    while True:
-        try:
-            weight = float(input("Enter your weight (kg): "))
-            if 30 <= weight <= 250:
-                user_data['Weight'] = weight
-                break
-            else:
-                print("Please enter a valid weight between 30 and 250 kg.")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
 
-    # Calculate BMI automatically
-    bmi = weight / ((height / 100) ** 2)
-    user_data['BMI'] = bmi
-    print(f"Your calculated BMI is: {bmi:.2f}")
-
-    # Health conditions
-    while True:
-        hypertension = input("Do you have hypertension (Yes/No)? ").strip().capitalize()
-        if hypertension in ['Yes', 'No']:
-            user_data['Hypertension'] = 1 if hypertension == 'Yes' else 0
-            break
-        else:
-            print("Invalid input. Please enter 'Yes' or 'No'.")
-
-    while True:
-        diabetes = input("Do you have diabetes (Yes/No)? ").strip().capitalize()
-        if diabetes in ['Yes', 'No']:
-            user_data['Diabetes'] = 1 if diabetes == 'Yes' else 0
-            break
-        else:
-            print("Invalid input. Please enter 'Yes' or 'No'.")
-
-    # Fitness goals
-    print("\nFitness Goals:")
-    print("1. Weight Loss")
-    print("2. Muscle Gain")
-    print("3. Cardiovascular Health")
-    print("4. Flexibility")
-    print("5. General Fitness")
-
-    goals = {
-        '1': 'Weight Loss',
-        '2': 'Muscle Gain',
-        '3': 'Cardiovascular Health',
-        '4': 'Flexibility',
-        '5': 'General Fitness'
-    }
-
-    while True:
-        goal_choice = input("Choose your fitness goal (1-5): ").strip()
-        if goal_choice in goals:
-            user_data['Fitness Goal'] = goals[goal_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 5.")
-
-    # Fitness types
-    print("\nPreferred Exercise Type:")
-    print("1. Cardio")
-    print("2. Strength Training")
-    print("3. Yoga/Pilates")
-    print("4. HIIT")
-    print("5. Mixed")
-
-    types = {
-        '1': 'Cardio',
-        '2': 'Strength Training',
-        '3': 'Yoga/Pilates',
-        '4': 'HIIT',
-        '5': 'Mixed'
-    }
-
-    while True:
-        type_choice = input("Choose your preferred exercise type (1-5): ").strip()
-        if type_choice in types:
-            user_data['Fitness Type'] = types[type_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 5.")
-
-    # Add BMI Level based on calculated BMI
-    if bmi < 18.5:
-        user_data['BMI Level'] = 'Underweight'
-    elif bmi < 25:
-        user_data['BMI Level'] = 'Normal'
-    elif bmi < 30:
-        user_data['BMI Level'] = 'Overweight'
-    else:
-        user_data['BMI Level'] = 'Obese'
-
-    print("\nThank you for providing your information. Generating recommendation...")
-    return user_data
+#
+# def get_user_input():
+#
+#     user_data = {}
+#     while True:
+#         gender = input("Enter your gender (Male/Female): ").strip().capitalize()
+#         if gender in ['Male', 'Female']:
+#             user_data['Sex'] = 1 if gender == 'Male' else 0
+#             break
+#         else:
+#             print("Invalid input. Please enter 'Male' or 'Female'.")
+#
+#     # Get age input
+#     while True:
+#         try:
+#             age = int(input("Enter your age (years): "))
+#             if 10 <= age <= 100:
+#                 user_data['Age'] = age
+#                 break
+#             else:
+#                 print("Please enter a valid age between 10 and 100.")
+#         except ValueError:
+#             print("Invalid input. Please enter a number.")
+#
+#     # Get height input
+#     while True:
+#         try:
+#             height = float(input("Enter your height (cm): "))
+#             if 100 <= height <= 220:
+#                 user_data['Height'] = height
+#                 break
+#             else:
+#                 print("Please enter a valid height between 100 and 220 cm.")
+#         except ValueError:
+#             print("Invalid input. Please enter a number.")
+#
+#     # Get weight input
+#     while True:
+#         try:
+#             weight = float(input("Enter your weight (kg): "))
+#             if 30 <= weight <= 250:
+#                 user_data['Weight'] = weight
+#                 break
+#             else:
+#                 print("Please enter a valid weight between 30 and 250 kg.")
+#         except ValueError:
+#             print("Invalid input. Please enter a number.")
+#
+#     # Calculate BMI automatically
+#     bmi = weight / ((height / 100) ** 2)
+#     user_data['BMI'] = bmi
+#     print(f"Your calculated BMI is: {bmi:.2f}")
+#
+#     # Health conditions
+#     while True:
+#         hypertension = input("Do you have hypertension (Yes/No)? ").strip().capitalize()
+#         if hypertension in ['Yes', 'No']:
+#             user_data['Hypertension'] = 1 if hypertension == 'Yes' else 0
+#             break
+#         else:
+#             print("Invalid input. Please enter 'Yes' or 'No'.")
+#
+#     while True:
+#         diabetes = input("Do you have diabetes (Yes/No)? ").strip().capitalize()
+#         if diabetes in ['Yes', 'No']:
+#             user_data['Diabetes'] = 1 if diabetes == 'Yes' else 0
+#             break
+#         else:
+#             print("Invalid input. Please enter 'Yes' or 'No'.")
+#
+#     # Fitness goals
+#     print("\nFitness Goals:")
+#     print("1. Weight Loss")
+#     print("2. Muscle Gain")
+#     print("3. Cardiovascular Health")
+#     print("4. Flexibility")
+#     print("5. General Fitness")
+#
+#     goals = {
+#         '1': 'Weight Loss',
+#         '2': 'Muscle Gain',
+#         '3': 'Cardiovascular Health',
+#         '4': 'Flexibility',
+#         '5': 'General Fitness'
+#     }
+#
+#     while True:
+#         goal_choice = input("Choose your fitness goal (1-5): ").strip()
+#         if goal_choice in goals:
+#             user_data['Fitness Goal'] = goals[goal_choice]
+#             break
+#         else:
+#             print("Invalid choice. Please enter a number between 1 and 5.")
+#
+#     # Fitness types
+#     print("\nPreferred Exercise Type:")
+#     print("1. Cardio")
+#     print("2. Strength Training")
+#     print("3. Yoga/Pilates")
+#     print("4. HIIT")
+#     print("5. Mixed")
+#
+#     types = {
+#         '1': 'Cardio',
+#         '2': 'Strength Training',
+#         '3': 'Yoga/Pilates',
+#         '4': 'HIIT',
+#         '5': 'Mixed'
+#     }
+#
+#     while True:
+#         type_choice = input("Choose your preferred exercise type (1-5): ").strip()
+#         if type_choice in types:
+#             user_data['Fitness Type'] = types[type_choice]
+#             break
+#         else:
+#             print("Invalid choice. Please enter a number between 1 and 5.")
+#
+#     # Add BMI Level based on calculated BMI
+#     if bmi < 18.5:
+#         user_data['BMI Level'] = 'Underweight'
+#     elif bmi < 25:
+#         user_data['BMI Level'] = 'Normal'
+#     elif bmi < 30:
+#         user_data['BMI Level'] = 'Overweight'
+#     else:
+#         user_data['BMI Level'] = 'Obese'
+#
+#     print("\nThank you for providing your information. Generating recommendation...")
+#     return user_data
 
 
 #Final Main Method
