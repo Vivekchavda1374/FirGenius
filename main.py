@@ -1,3 +1,5 @@
+#Phase 1: Setup and Data Preparation
+
 # Import libraries
 import pandas as pd
 import numpy as np
@@ -58,3 +60,6 @@ print("\nDataframe information:")
 print(df.info())
 print("\nSummary statistics:")
 print(df.describe())
+
+
+#Phase 2: Feature Engineering
