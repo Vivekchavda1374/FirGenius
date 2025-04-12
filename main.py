@@ -1,80 +1,103 @@
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
-from unicodedata import category
 
 
-#PHASE 1  LOAD DATA AND CLEAN DATASET
-
+# PHASE 1: LOAD DATA AND CLEAN DATASET
 def load_and_clean_data(file_path):
     print("Data is loading.......")
-    df =pd.read_csv(file_path)
+    df = pd.read_csv(file_path)
     print(df.shape)
-    print("\n for missing value before cleaning")
+    print("\nMissing values before cleaning:")
     print(df.isnull().sum())
-    df['Age'].fillna(df['Age'].median(),inplace=True)
-    df['Height'].fillna(df['Height'].median(), inplace=True)
-    df['Weight'].fillna(df['Weight'].median(), inplace=True)
+
+    # Fix the warnings by avoiding chained assignments with inplace=True
+    # Instead, use direct assignment with loc or update the entire column
+    df = df.copy()  # Create a copy to avoid modifying views
+
+    # Fill missing values in numerical columns
+    df['Age'] = df['Age'].fillna(df['Age'].median())
+    df['Height'] = df['Height'].fillna(df['Height'].median())
+    df['Weight'] = df['Weight'].fillna(df['Weight'].median())
+
+    # Fill missing values in categorical columns
     category_data = ['Sex', 'Hypertension', 'Diabetes', 'Fitness Goal',
-                        'Fitness Type', 'Exercises', 'Equipment',
-                        'Diet (Vegetable)', 'Diet (protein intake)', 'Diet (Juice)']
+                     'Fitness Type', 'Exercises', 'Equipment',
+                     'Diet (Vegetable)', 'Diet (protein intake)', 'Diet (Juice)']
 
     for col in category_data:
         if col in df.columns:
-            df[col].fillna(df[col].mode()[0],inplace= True)
+            df[col] = df[col].fillna(df[col].mode()[0])
 
-    if 'BMI' not in df.columns:
+    # Fixed BMI calculation logic
+    if 'BMI' in df.columns:
         mask = df['BMI'].isnull()
-        df.loc[mask,'BMI'] =  df.loc[mask, 'Weight'] / ((df.loc[mask, 'Height'] / 100) ** 2)
+        df.loc[mask, 'BMI'] = df.loc[mask, 'Weight'] / ((df.loc[mask, 'Height'] / 100) ** 2)
     else:
-        df['BMI'] = df['Weight']/((df['Height']/100)**2)
+        df['BMI'] = df['Weight'] / ((df['Height'] / 100) ** 2)
+
     if 'BMI Level' not in df.columns:
         df['BMI Level'] = pd.cut(
             df['BMI'],
             bins=[0, 18.5, 24.9, 29.9, 100],
             labels=['Underweight', 'Normal', 'Overweight', 'Obese']
         )
-    df['Sex']=df['Sex'].map({'Male': 1, 'Female': 0})
+
+    # Map categorical values to numerical
+    df['Sex'] = df['Sex'].map({'Male': 1, 'Female': 0})
     df['Hypertension'] = df['Hypertension'].map({'Yes': 1, 'No': 0})
     df['Diabetes'] = df['Diabetes'].map({'Yes': 1, 'No': 0})
+
     print("\nMissing values after cleaning:")
     print(df.isnull().sum())
 
     return df
 
-#PHASR 2: FEATURE ENGINEERING
 
-def  feature_engineering(df):
+# PHASE 2: FEATURE ENGINEERING
+def feature_engineering(df):
+    df = df.copy()  # Create a copy to avoid modifying views
+
+    # Create age groups
     df['Age_Group'] = pd.cut(
         df['Age'],
-        bins=[0,18,35,50,65,100],
-        labels=['Teen','Young_Adult','Adult','Middle_Age','Senior']
+        bins=[0, 18, 35, 50, 65, 100],
+        labels=['Teen', 'Young_Adult', 'Adult', 'Middle_Age', 'Senior']
     )
-    df['Health_Risk_Score' ] = 0
-    df.loc[df['Hypertension'] == 1, 'Health_Risk_Score'] += 1
-    df.loc[df['Diabetes'] == 1, 'Health_Risk_Score'] += 1
-    df.loc[df['BMI'] < 18.5, 'Health_Risk_Score'] += 1
-    df.loc[df['BMI'] > 30, 'Health_Risk_Score'] += 1
-    df.loc[df['BMI'] > 35, 'Health_Risk_Score'] += 1
 
+    # Initialize health risk score
+    df['Health_Risk_Score'] = 0
+
+    # Update health risk scores - avoiding inplace modifications
+    # Instead of incrementing with +=, we'll set the entire column at once
+    risk_score = df['Health_Risk_Score'].copy()
+    risk_score = np.where(df['Hypertension'] == 1, risk_score + 1, risk_score)
+    risk_score = np.where(df['Diabetes'] == 1, risk_score + 1, risk_score)
+    risk_score = np.where(df['BMI'] < 18.5, risk_score + 1, risk_score)
+    risk_score = np.where(df['BMI'] > 30, risk_score + 1, risk_score)
+    risk_score = np.where(df['BMI'] > 35, risk_score + 1, risk_score)
+    df['Health_Risk_Score'] = risk_score
+
+    # Set compatibility scores - using loc to avoid warnings
     df['Cardio_Compatibility'] = 1
     df.loc[(df['Hypertension'] == 1) & (df['Age'] > 60), 'Cardio_Compatibility'] = 0.5
+
     df['Strength_Compatibility'] = 1
     df.loc[(df['BMI'] < 18.5), 'Strength_Compatibility'] = 0.7
-    df['Needs_Low_Sodium'] = df['Hypertension'] == 1
-    df['Needs_Low_Carb'] = df['Diabetes'] == 1
+
+    # Set dietary needs
+    df['Needs_Low_Sodium'] = (df['Hypertension'] == 1).astype(int)
+    df['Needs_Low_Carb'] = (df['Diabetes'] == 1).astype(int)
 
     if 'Fitness Goal' in df.columns:
         df['Needs_High_Protein'] = (df['Fitness Goal'] == 'Muscle Gain').astype(int)
     else:
         df['Needs_High_Protein'] = 0
 
-    categorical_columns=[]
+    # One-hot encode categorical features
+    categorical_columns = []
     if 'BMI Level' in df.columns:
         categorical_columns.append('BMI Level')
     if 'Fitness Type' in df.columns:
@@ -82,16 +105,17 @@ def  feature_engineering(df):
     if 'Fitness Goal' in df.columns:
         categorical_columns.append('Fitness Goal')
     categorical_columns.append('Age_Group')
+
     dummies_df = pd.get_dummies(df[categorical_columns], prefix=categorical_columns)
     df_numeric = df.drop(categorical_columns, axis=1)
     df_final = pd.concat([df_numeric, dummies_df], axis=1)
+
     print(f"Dataset shape after feature engineering: {df_final.shape}")
     print(f"New features added: {df_final.columns.tolist()}")
     return df_final
 
 
-#PHASE 3: MODEL DEVELOPMENT
-
+# PHASE 3: MODEL DEVELOPMENT
 def prepare_training_data(df):
     numerical_features = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
 
@@ -99,21 +123,25 @@ def prepare_training_data(df):
         numerical_features.remove('ID')
     if 'Recommendation' in numerical_features:
         numerical_features.remove('Recommendation')
-    dummy_feature = [col for col in df.columns if col.startswith('BMI_','Fitness Goal_', 'Fitness Type_', 'Age_Group_')]
+
+    dummy_feature = [col for col in df.columns if
+                     any(col.startswith(prefix) for prefix in
+                         ['BMI Level_', 'Fitness Goal_', 'Fitness Type_', 'Age_Group_'])]
     feature = numerical_features + dummy_feature
-    # print(feature)
 
     if 'Recommendation' in df.columns:
         x = df[feature]
         y = df['Recommendation']
 
-        #split data in train and test
-        x_train , x_test, y_train, y_test = train_test_split(x, y, test_size=0.3, random_state=42)
+        # split data in train and test
+        x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.3, random_state=42)
         return x_train, x_test, y_train, y_test
     else:
-        print("Error: column not found.")
+        print("Error: Recommendation column not found.")
         return None, None, None, None
-def train_model(x_train,y_train):
+
+
+def train_model(x_train, y_train):
     model = RandomForestClassifier(
         n_estimators=100,
         max_depth=10,
@@ -124,41 +152,54 @@ def train_model(x_train,y_train):
     model.fit(x_train, y_train)
     return model
 
+
 def evaluate_model(model, x_test, y_test):
     x_test = x_test.astype('float32')
     y_pred = model.predict(x_test)
     accuracy = accuracy_score(y_test, y_pred)
-    print(accuracy)
-    print("report")
-    print(classification_report(y_test, y_pred))
+    print(f"Accuracy: {accuracy:.4f}")
+    print("\nClassification Report:")
+    # Add zero_division parameter to avoid warnings
+    print(classification_report(y_test, y_pred, zero_division=0))
 
-    #feature importance
+    # Feature importance
     feature_importances = pd.DataFrame({
         'Feature': x_test.columns,
         'Importance': model.feature_importances_,
-
     }).sort_values('Importance', ascending=False)
     print("\nTop 10 Important Features:")
     print(feature_importances.head(10))
 
     return accuracy, feature_importances
 
-#Phase 4
 
+# PHASE 4: RECOMMENDATION PIPELINE
 def preprocess_input(user_data, feature_names):
     if not isinstance(user_data, pd.DataFrame):
-        user_data = pd.DataFrame(user_data)
-    if 'BMI' not in user_data.columns  and 'Height' in user_data.columns and 'Weight' in user_data.columns:
+        user_data = pd.DataFrame([user_data])  # Convert dict to DataFrame if needed
+
+    # Calculate BMI if not present
+    if 'BMI' not in user_data.columns and 'Height' in user_data.columns and 'Weight' in user_data.columns:
         user_data['BMI'] = user_data['Weight'] / ((user_data['Height'] / 100) ** 2)
+
+    # Initialize and calculate health risk score
     user_data['Health_Risk_Score'] = 0
+
+    # Use cleaner approach for risk score calculation
+    risk_score = user_data['Health_Risk_Score'].copy()
+
     if 'Hypertension' in user_data.columns:
-        user_data.loc[user_data['Hypertension'] == 1, 'Health_Risk_Score'] += 1
+        risk_score = np.where(user_data['Hypertension'] == 1, risk_score + 1, risk_score)
     if 'Diabetes' in user_data.columns:
-        user_data.loc[user_data['Diabetes'] == 1, 'Health_Risk_Score'] += 1
+        risk_score = np.where(user_data['Diabetes'] == 1, risk_score + 1, risk_score)
     if 'BMI' in user_data.columns:
-        user_data.loc[user_data['BMI'] < 18.5, 'Health_Risk_Score'] += 1
-        user_data.loc[user_data['BMI'] > 30, 'Health_Risk_Score'] += 1
-        user_data.loc[user_data['BMI'] > 35, 'Health_Risk_Score'] += 1
+        risk_score = np.where(user_data['BMI'] < 18.5, risk_score + 1, risk_score)
+        risk_score = np.where(user_data['BMI'] > 30, risk_score + 1, risk_score)
+        risk_score = np.where(user_data['BMI'] > 35, risk_score + 1, risk_score)
+
+    user_data['Health_Risk_Score'] = risk_score
+
+    # Set compatibility scores
     user_data['Cardio_Compatibility'] = 1
     if 'Hypertension' in user_data.columns and 'Age' in user_data.columns:
         user_data.loc[(user_data['Hypertension'] == 1) & (user_data['Age'] > 60), 'Cardio_Compatibility'] = 0.5
@@ -166,16 +207,16 @@ def preprocess_input(user_data, feature_names):
     user_data['Strength_Compatibility'] = 1
     if 'BMI' in user_data.columns:
         user_data.loc[(user_data['BMI'] < 18.5), 'Strength_Compatibility'] = 0.7
-    user_data['Strength_Compatibility'] = 1
-    if 'BMI' in user_data.columns:
-        user_data.loc[(user_data['BMI'] < 18.5), 'Strength_Compatibility'] = 0.7
 
+    # Set dietary needs
     if 'Hypertension' in user_data.columns:
-        user_data['Needs_Low_Sodium'] = user_data['Hypertension'] == 1
+        user_data['Needs_Low_Sodium'] = (user_data['Hypertension'] == 1).astype(int)
     if 'Diabetes' in user_data.columns:
-        user_data['Needs_Low_Carb'] = user_data['Diabetes'] == 1
+        user_data['Needs_Low_Carb'] = (user_data['Diabetes'] == 1).astype(int)
     if 'Fitness Goal' in user_data.columns:
         user_data['Needs_High_Protein'] = (user_data['Fitness Goal'] == 'Muscle Gain').astype(int)
+
+    # Create age group if age is available
     if 'Age' in user_data.columns:
         user_data['Age_Group'] = pd.cut(
             user_data['Age'],
@@ -183,50 +224,43 @@ def preprocess_input(user_data, feature_names):
             labels=['Teen', 'Young_Adult', 'Adult', 'Middle_Age', 'Senior']
         )
 
-        # One-hot encode Age_Group and other categorical features
-        categorical_columns = ['Age_Group']
+    # One-hot encode categorical features
+    categorical_columns = []
+    if 'Age_Group' in user_data.columns:
+        categorical_columns.append('Age_Group')
+    if 'BMI Level' in user_data.columns:
+        categorical_columns.append('BMI Level')
+    if 'Fitness Goal' in user_data.columns:
+        categorical_columns.append('Fitness Goal')
+    if 'Fitness Type' in user_data.columns:
+        categorical_columns.append('Fitness Type')
 
-        if 'BMI Level' in user_data.columns:
-            categorical_columns.append('BMI Level')
+    # Create one-hot encoding for each category
+    for col in categorical_columns:
+        if col in user_data.columns:
+            dummies = pd.get_dummies(user_data[col], prefix=col)
+            user_data = pd.concat([user_data, dummies], axis=1)
+            user_data = user_data.drop(col, axis=1)
 
-        if 'Fitness Goal' in user_data.columns:
-            categorical_columns.append('Fitness Goal')
+    # Create a DataFrame with all required feature columns
+    processed_data = pd.DataFrame(columns=feature_names)
 
-        if 'Fitness Type' in user_data.columns:
-            categorical_columns.append('Fitness Type')
+    # Fill in available features
+    for feature in feature_names:
+        if feature in user_data.columns:
+            processed_data[feature] = user_data[feature]
+        else:
+            processed_data[feature] = 0  # Default value for missing features
 
-        for col in categorical_columns:
-            if col in user_data.columns:
-                # Create one-hot encoding for each category
-                dummies = pd.get_dummies(user_data[col], prefix=col)
-                user_data = pd.concat([user_data, dummies], axis=1)
-                user_data = user_data.drop(col, axis=1)
-                processed_data = pd.DataFrame(columns=feature_names)
+    # Convert to float to ensure compatibility with the model
+    processed_data = processed_data.astype(float)
 
-                for feature in feature_names:
-                    if feature in user_data.columns:
-                        processed_data[feature] = user_data[feature]
-                    else:
-                        processed_data[feature] = 0  # Default value for missing features
-
-                # Convert to float to ensure compatibility with the model
-                processed_data = processed_data.astype(float)
-
-                return processed_data
-
+    return processed_data
 
 
 def generate_recommendations(model, user_data, feature_names):
-    """
-    Generate recommendations for a single user
-    """
-    # Preprocess the input data
     processed_data = preprocess_input(user_data, feature_names)
-
-    # Generate recommendation
     recommendation = model.predict(processed_data)[0]
-
-    # Get confidence scores (probabilities) for recommendations
     probabilities = model.predict_proba(processed_data)
     confidence = np.max(probabilities)
 
@@ -234,12 +268,7 @@ def generate_recommendations(model, user_data, feature_names):
 
 
 def explain_recommendation(recommendation, user_data):
-    """
-    Generate human-readable explanation for a recommendation
-    """
     explanation = f"Based on your profile, we recommend: {recommendation}\n\n"
-
-    # Add specific explanations based on user attributes
     health_conditions = []
     if user_data.get('Hypertension', 0) == 1:
         health_conditions.append("hypertension")
@@ -273,9 +302,6 @@ def explain_recommendation(recommendation, user_data):
 
 
 def safety_check(recommendation, user_data):
-    """
-    Perform safety checks on recommendations based on health conditions
-    """
     warnings = []
 
     # Check for high-intensity recommendations for people with heart conditions
@@ -299,9 +325,11 @@ def safety_check(recommendation, user_data):
 
     return warnings
 
-def get_user_input():
 
+def get_user_input():
     user_data = {}
+
+    # Get gender input
     while True:
         gender = input("Enter your gender (Male/Female): ").strip().capitalize()
         if gender in ['Male', 'Female']:
@@ -401,8 +429,8 @@ def get_user_input():
     print("5. Mixed")
 
     types = {
-        '1': 'Cardio',
-        '2': 'Strength Training',
+        '1': 'Cardio Fitness',
+        '2': 'Muscular Fitness',
         '3': 'Yoga/Pilates',
         '4': 'HIIT',
         '5': 'Mixed'
@@ -426,18 +454,11 @@ def get_user_input():
     else:
         user_data['BMI Level'] = 'Obese'
 
-    print("\nThank you for providing your information. Generating recommendation...")
     return user_data
 
 
 def build_recommendation_system(data_path):
-    """
-    Main function to build and test the recommendation system
-    """
-    print("Building Health Recommendation System")
-    print("=====================================")
-
-    # Phase 1: Load and clean data
+    # Phase 1: Data loading and cleaning
     df = load_and_clean_data(data_path)
 
     # Phase 2: Feature engineering
@@ -456,19 +477,10 @@ def build_recommendation_system(data_path):
 
 
 def get_recommendation_for_user(model, feature_names, user_data):
-    """
-    Generate and explain recommendations for a single user
-    """
-    # Generate recommendation
     recommendation, confidence = generate_recommendations(model, user_data, feature_names)
-
-    # Explain recommendation
     explanation = explain_recommendation(recommendation, user_data)
-
-    # Safety check
     warnings = safety_check(recommendation, user_data)
 
-    # Combine results
     result = {
         'recommendation': recommendation,
         'confidence': confidence,
@@ -479,8 +491,8 @@ def get_recommendation_for_user(model, feature_names, user_data):
     return result
 
 
-# Example usage
-if _name_ == "_main_":
+# Main execution block
+if __name__ == "__main__":
     # Example path - replace with your actual file path
     data_path = "./Dataset/gym recommendation (1).csv"
 
@@ -488,7 +500,7 @@ if _name_ == "_main_":
     model, feature_names = build_recommendation_system(data_path)
 
     if model is not None:
-        # Get user input instead of using sample data
+        # Get user input
         user_data = get_user_input()
 
         # Get recommendation
