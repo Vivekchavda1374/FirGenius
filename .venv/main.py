@@ -1,3 +1,4 @@
+from flask import Flask, render_template, request, session, redirect, url_for, flash
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
@@ -5,14 +6,20 @@ from sklearn.neighbors import NearestNeighbors
 import os
 import sys
 
-# Global variable to store the original dataframe for recommendations
+app = Flask(__name__)
+app.secret_key = 'fitness_recommendation_secret_key'
+
+# Global variables to store model components
 original_df = None
+knn_model = None
+features = None
+scaler = None
 
 
 # PHASE 1: LOAD DATA, EXPLORE AND CLEAN DATASET
 def load_and_explore_data(file_path):
     """Load and clean the dataset from a CSV file."""
-    print("Data is loading...")
+    app.logger.info("Data is loading...")
 
     try:
         # Try to infer separator automatically
@@ -22,17 +29,17 @@ def load_and_explore_data(file_path):
         if len(df.columns) == 1:
             df = pd.read_csv(file_path, sep='\t')
 
-        print(f"Dataset loaded successfully with shape: {df.shape}")
+        app.logger.info(f"Dataset loaded successfully with shape: {df.shape}")
 
         # Convert height from meters to cm if necessary
         if 'Height' in df.columns and df['Height'].max() < 3:  # If height is in meters
             df['Height'] = df['Height'] * 100
-            print("Height converted from meters to centimeters")
+            app.logger.info("Height converted from meters to centimeters")
 
         # Check for duplicates
         dup_count = df.duplicated().sum()
         if dup_count > 0:
-            print(f"Found {dup_count} duplicate rows - removing duplicates")
+            app.logger.info(f"Found {dup_count} duplicate rows - removing duplicates")
             df = df.drop_duplicates()
 
         # Create a copy to avoid modifying views
@@ -41,7 +48,7 @@ def load_and_explore_data(file_path):
         # Check missing values
         missing_before = df.isnull().sum().sum()
         if missing_before > 0:
-            print(f"Found {missing_before} missing values - cleaning data")
+            app.logger.info(f"Found {missing_before} missing values - cleaning data")
 
             # Fill missing values in numerical columns
             for col in df.select_dtypes(include=['number']).columns:
@@ -57,7 +64,7 @@ def load_and_explore_data(file_path):
         # Handle BMI calculation
         if 'BMI' not in df.columns and 'Height' in df.columns and 'Weight' in df.columns:
             df['BMI'] = df['Weight'] / ((df['Height'] / 100) ** 2)
-            print("BMI calculated from height and weight")
+            app.logger.info("BMI calculated from height and weight")
         elif 'BMI' in df.columns:
             # Fill missing BMI values
             mask = df['BMI'].isnull()
@@ -74,7 +81,7 @@ def load_and_explore_data(file_path):
                 bins=[0, 18.5, 24.9, 29.9, 100],
                 labels=['Underweight', 'Normal', 'Overweight', 'Obese']
             )
-            print("BMI Level categorized based on BMI values")
+            app.logger.info("BMI Level categorized based on BMI values")
 
         # Map categorical values to numerical for model training if present
         if 'Sex' in df.columns:
@@ -94,16 +101,14 @@ def load_and_explore_data(file_path):
         # Check final missing values
         missing_after = df.isnull().sum().sum()
         if missing_after > 0:
-            print(f"Warning: {missing_after} missing values remain after cleaning")
-            print(df.isnull().sum())
+            app.logger.warning(f"Warning: {missing_after} missing values remain after cleaning")
         else:
-            print("Data cleaning complete - no missing values remain")
+            app.logger.info("Data cleaning complete - no missing values remain")
 
         return df
 
     except Exception as e:
-        print(f"Error loading data: {str(e)}")
-        print("Please make sure the file exists and is in the correct format")
+        app.logger.error(f"Error loading data: {str(e)}")
         return None
 
 
@@ -111,10 +116,10 @@ def load_and_explore_data(file_path):
 def feature_engineering(df):
     """Add new features to improve recommendation quality."""
     if df is None:
-        print("No data available for feature engineering")
+        app.logger.error("No data available for feature engineering")
         return None
 
-    print("\nPerforming feature engineering...")
+    app.logger.info("Performing feature engineering...")
     df = df.copy()
 
     # Create age groups if Age column exists
@@ -124,7 +129,7 @@ def feature_engineering(df):
             bins=[0, 18, 35, 50, 65, 100],
             labels=['Teen', 'Young_Adult', 'Adult', 'Middle_Age', 'Senior']
         )
-        print("Age groups created")
+        app.logger.info("Age groups created")
 
     # Initialize health risk score
     df['Health_Risk_Score'] = 0
@@ -143,7 +148,7 @@ def feature_engineering(df):
         risk_score = np.where(df['BMI'] > 35, risk_score + 1, risk_score)
 
     df['Health_Risk_Score'] = risk_score
-    print("Health risk scores calculated")
+    app.logger.info("Health risk scores calculated")
 
     # One-hot encode categorical features
     categorical_columns = []
@@ -155,15 +160,15 @@ def feature_engineering(df):
 
     # Only apply one-hot encoding if we have categorical columns
     if categorical_columns:
-        print(f"One-hot encoding categorical features: {', '.join(categorical_columns)}")
+        app.logger.info(f"One-hot encoding categorical features: {', '.join(categorical_columns)}")
         dummies_df = pd.get_dummies(df[categorical_columns], prefix=categorical_columns)
         df_numeric = df.drop(categorical_columns, axis=1)
         df_final = pd.concat([df_numeric, dummies_df], axis=1)
     else:
         df_final = df
-        print("No categorical columns found for one-hot encoding")
+        app.logger.info("No categorical columns found for one-hot encoding")
 
-    print(f"Feature engineering complete. Dataset shape: {df_final.shape}")
+    app.logger.info(f"Feature engineering complete. Dataset shape: {df_final.shape}")
     return df_final
 
 
@@ -171,10 +176,10 @@ def feature_engineering(df):
 def prepare_data_for_knn(df):
     """Prepare data for K-Nearest Neighbors model."""
     if df is None:
-        print("No data available for KNN preparation")
+        app.logger.error("No data available for KNN preparation")
         return None, None, None
 
-    print("\nPreparing data for KNN model...")
+    app.logger.info("Preparing data for KNN model...")
     global original_df
     original_df = df.copy()
 
@@ -184,7 +189,7 @@ def prepare_data_for_knn(df):
 
     # Filter to only include features that exist in the dataframe
     numerical_features = [f for f in base_features + optional_features if f in df.columns]
-    print(f"Using numerical features: {', '.join(numerical_features)}")
+    app.logger.info(f"Using numerical features: {', '.join(numerical_features)}")
 
     # Get dummy columns for categorical variables
     dummy_prefixes = ['BMI Level_', 'Fitness Goal_', 'Fitness Type_', 'Age_Group_']
@@ -192,7 +197,7 @@ def prepare_data_for_knn(df):
                       any(col.startswith(prefix) for prefix in dummy_prefixes)]
 
     if dummy_features:
-        print(f"Using {len(dummy_features)} one-hot encoded features")
+        app.logger.info(f"Using {len(dummy_features)} one-hot encoded features")
 
     features = numerical_features + dummy_features
 
@@ -200,7 +205,7 @@ def prepare_data_for_knn(df):
     features = [f for f in features if f in df.columns]
 
     if not features:
-        print("Error: No valid features found for KNN model")
+        app.logger.error("Error: No valid features found for KNN model")
         return None, None, None
 
     # Extract features
@@ -218,7 +223,7 @@ def prepare_data_for_knn(df):
     # Standardize numerical features
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    print(f"Data prepared successfully with {X.shape[1]} features")
+    app.logger.info(f"Data prepared successfully with {X.shape[1]} features")
 
     return X_scaled, features, scaler
 
@@ -226,18 +231,18 @@ def prepare_data_for_knn(df):
 def train_knn_model(X_scaled, n_neighbors=3):
     """Train a K-Nearest Neighbors model."""
     if X_scaled is None:
-        print("No scaled data available for KNN model training")
+        app.logger.error("No scaled data available for KNN model training")
         return None
 
-    print(f"\nTraining KNN model with {n_neighbors} neighbors...")
+    app.logger.info(f"Training KNN model with {n_neighbors} neighbors...")
     try:
         # Train KNN model
         knn_model = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto')
         knn_model.fit(X_scaled)
-        print("KNN model trained successfully")
+        app.logger.info("KNN model trained successfully")
         return knn_model
     except Exception as e:
-        print(f"Error training KNN model: {str(e)}")
+        app.logger.error(f"Error training KNN model: {str(e)}")
         return None
 
 
@@ -245,16 +250,15 @@ def train_knn_model(X_scaled, n_neighbors=3):
 def preprocess_user_for_knn(user_data, features, scaler):
     """Process user input data to make it compatible with the KNN model."""
     if not user_data or not features or not scaler:
-        print("Missing data for user preprocessing")
+        app.logger.error("Missing data for user preprocessing")
         return None
 
-    print("\nProcessing your profile for the recommendation system...")
+    app.logger.info("Processing user profile for recommendation system...")
     user_df = pd.DataFrame([user_data])
 
     # Calculate BMI if not present
     if 'BMI' not in user_df.columns and 'Height' in user_df.columns and 'Weight' in user_df.columns:
         user_df['BMI'] = user_df['Weight'] / ((user_df['Height'] / 100) ** 2)
-        print(f"Your BMI has been calculated as {user_df['BMI'].values[0]:.2f}")
 
     # Add BMI Level if needed
     if 'BMI Level' not in user_df.columns and 'BMI' in user_df.columns:
@@ -263,7 +267,6 @@ def preprocess_user_for_knn(user_data, features, scaler):
             bins=[0, 18.5, 24.9, 29.9, 100],
             labels=['Underweight', 'Normal', 'Overweight', 'Obese']
         )
-        print(f"Your BMI category: {user_df['BMI Level'].values[0]}")
 
     # Create age groups if needed
     if 'Age_Group' not in user_df.columns and 'Age' in user_df.columns:
@@ -309,10 +312,10 @@ def preprocess_user_for_knn(user_data, features, scaler):
     # Scale the feature vector
     try:
         feature_vector_scaled = scaler.transform(feature_vector)
-        print("Your profile has been successfully processed")
+        app.logger.info("User profile successfully processed")
         return feature_vector_scaled
     except Exception as e:
-        print(f"Error processing your profile: {str(e)}")
+        app.logger.error(f"Error processing user profile: {str(e)}")
         return None
 
 
@@ -320,10 +323,10 @@ def preprocess_user_for_knn(user_data, features, scaler):
 def generate_knn_recommendations(knn_model, user_data, features, scaler, n_recommendations=3):
     """Generate fitness recommendations based on similar profiles."""
     if knn_model is None or user_data is None:
-        print("Missing model or user data for recommendations")
+        app.logger.error("Missing model or user data for recommendations")
         return []
 
-    print("\nFinding similar profiles for recommendations...")
+    app.logger.info("Finding similar profiles for recommendations...")
     user_vector = preprocess_user_for_knn(user_data, features, scaler)
 
     if user_vector is None:
@@ -355,10 +358,10 @@ def generate_knn_recommendations(knn_model, user_data, features, scaler, n_recom
 
             recommendations.append(recommendation)
 
-        print(f"Found {len(recommendations)} similar profiles")
+        app.logger.info(f"Found {len(recommendations)} similar profiles")
         return recommendations
     except Exception as e:
-        print(f"Error generating recommendations: {str(e)}")
+        app.logger.error(f"Error generating recommendations: {str(e)}")
         return []
 
 
@@ -368,7 +371,7 @@ def generate_personalized_recommendation(recommendations, user_data):
     if not recommendations:
         return {}
 
-    print("\nCreating your personalized fitness plan...")
+    app.logger.info("Creating personalized fitness plan...")
     top_rec = recommendations[0]
 
     # Create personalized recommendation with available fields
@@ -407,7 +410,7 @@ def generate_personalized_recommendation(recommendations, user_data):
         elif age < 18:
             personalized['Equipment'] += " Start with bodyweight exercises before progressing to weights."
 
-    print("Personalized plan created successfully")
+    app.logger.info("Personalized plan created successfully")
     return personalized
 
 
@@ -417,19 +420,19 @@ def explain_personalized_recommendation(recommendation, user_data):
     if not recommendation or not user_data:
         return "Unable to generate explanation with insufficient data."
 
-    explanation = f"Based on your unique profile, we've created a personalized recommendation:\n\n"
+    explanation = f"Based on your unique profile, we've created a personalized recommendation:"
 
     # Explain based on key metrics
     bmi = user_data.get('BMI', None)
     if bmi is not None:
         if bmi < 18.5:
-            explanation += f"BMI Status: Your BMI of {bmi:.1f} indicates you're underweight. This plan focuses on building strength and healthy weight gain.\n\n"
+            explanation += f"<p><strong>BMI Status:</strong> Your BMI of {bmi:.1f} indicates you're underweight. This plan focuses on building strength and healthy weight gain.</p>"
         elif bmi >= 25 and bmi < 30:
-            explanation += f"BMI Status: Your BMI of {bmi:.1f} indicates you're overweight. This plan balances cardio and strength training for optimal weight management.\n\n"
+            explanation += f"<p><strong>BMI Status:</strong> Your BMI of {bmi:.1f} indicates you're overweight. This plan balances cardio and strength training for optimal weight management.</p>"
         elif bmi >= 30:
-            explanation += f"BMI Status: Your BMI of {bmi:.1f} indicates obesity. This plan prioritizes joint-friendly exercises and nutritional guidance.\n\n"
+            explanation += f"<p><strong>BMI Status:</strong> Your BMI of {bmi:.1f} indicates obesity. This plan prioritizes joint-friendly exercises and nutritional guidance.</p>"
         else:
-            explanation += f"BMI Status: Your BMI of {bmi:.1f} is in the normal range. This plan focuses on maintaining your healthy weight while improving fitness.\n\n"
+            explanation += f"<p><strong>BMI Status:</strong> Your BMI of {bmi:.1f} is in the normal range. This plan focuses on maintaining your healthy weight while improving fitness.</p>"
 
     # Explain based on health conditions
     health_conditions = []
@@ -439,286 +442,192 @@ def explain_personalized_recommendation(recommendation, user_data):
         health_conditions.append("diabetes")
 
     if health_conditions:
-        explanation += f"Health Considerations: Your plan is adjusted for {', '.join(health_conditions)}, with appropriate intensity levels and dietary recommendations.\n\n"
+        explanation += f"<p><strong>Health Considerations:</strong> Your plan is adjusted for {', '.join(health_conditions)}, with appropriate intensity levels and dietary recommendations.</p>"
 
     # Explain based on age
     age = user_data.get('Age', None)
     if age is not None:
         if age < 18:
-            explanation += f"Age Consideration: At {age} years old, this plan focuses on fundamentals, proper form, and developing healthy habits.\n\n"
+            explanation += f"<p><strong>Age Consideration:</strong> At {age} years old, this plan focuses on fundamentals, proper form, and developing healthy habits.</p>"
         elif age > 65:
-            explanation += f"Age Consideration: At {age} years old, this plan emphasizes joint health, flexibility, and appropriate intensity levels.\n\n"
+            explanation += f"<p><strong>Age Consideration:</strong> At {age} years old, this plan emphasizes joint health, flexibility, and appropriate intensity levels.</p>"
         else:
-            explanation += f"Age Consideration: At {age} years old, this plan balances challenge and sustainability for long-term health.\n\n"
+            explanation += f"<p><strong>Age Consideration:</strong> At {age} years old, this plan balances challenge and sustainability for long-term health.</p>"
 
     # Explain based on fitness goal
     fitness_goal = user_data.get('Fitness Goal', None)
     if fitness_goal:
-        explanation += f"Fitness Goal: Your goal of '{fitness_goal}' is the foundation of this recommendation, with specific exercise patterns and nutritional guidance to support it.\n\n"
+        explanation += f"<p><strong>Fitness Goal:</strong> Your goal of '{fitness_goal}' is the foundation of this recommendation, with specific exercise patterns and nutritional guidance to support it.</p>"
 
     return explanation
 
 
-# Function to get user input with validation
-def get_user_input():
-    """Collect and validate user input for a fitness recommendation."""
-    user_data = {}
+# Initialize the model when app starts
+def initialize_model():
+    global knn_model, features, scaler, original_df
 
-    print("\n--- Please enter your personal information ---")
+    # Define path to dataset
+    dataset_dir = "./static/dataset"
+    if not os.path.exists(dataset_dir):
+        os.makedirs(dataset_dir)
+        app.logger.info(f"Created directory {dataset_dir}")
 
-    # Get gender input
-    gender = input("Enter your gender (Male/Female) or press Enter to skip: ").strip().capitalize()
-    if gender in ['Male', 'Female']:
-        user_data['Sex'] = 1 if gender == 'Male' else 0
+    # File path
+    file_path = os.path.join(dataset_dir, "gym_recommendation.csv")
 
-    # Get age input with validation
-    while True:
-        age_input = input("Enter your age (years) or press Enter to skip: ").strip()
-        if not age_input:
-            break
-        try:
-            age = int(age_input)
-            if 10 <= age <= 100:
-                user_data['Age'] = age
-                break
-            else:
-                print("Please enter a valid age between 10 and 100 years.")
-        except ValueError:
-            print("Please enter a valid number for age.")
+    # Check if file exists
+    if not os.path.isfile(file_path):
+        app.logger.warning(f"File not found: {file_path}")
+        # Try to find any CSV file in the dataset directory
+        csv_files = [f for f in os.listdir(dataset_dir) if f.endswith('.csv')]
 
-    # Get height input with validation
-    while True:
-        height_input = input("Enter your height (cm) or press Enter to skip: ").strip()
-        if not height_input:
-            break
-        try:
-            height = float(height_input)
-            if 100 <= height <= 220:
-                user_data['Height'] = height
-                break
-            else:
-                print("Please enter a valid height between 100 and 220 cm.")
-        except ValueError:
-            print("Please enter a valid number for height.")
-
-    # Get weight input with validation
-    while True:
-        weight_input = input("Enter your weight (kg) or press Enter to skip: ").strip()
-        if not weight_input:
-            break
-        try:
-            weight = float(weight_input)
-            if 30 <= weight <= 250:
-                user_data['Weight'] = weight
-                break
-            else:
-                print("Please enter a valid weight between 30 and 250 kg.")
-        except ValueError:
-            print("Please enter a valid number for weight.")
-
-    # Calculate BMI if possible
-    if 'Height' in user_data and 'Weight' in user_data:
-        bmi = user_data['Weight'] / ((user_data['Height'] / 100) ** 2)
-        user_data['BMI'] = bmi
-        print(f"Your calculated BMI is: {bmi:.2f}")
-
-        # Set BMI Level based on calculated BMI
-        if bmi < 18.5:
-            user_data['BMI Level'] = 'Underweight'
-        elif bmi < 25:
-            user_data['BMI Level'] = 'Normal'
-        elif bmi < 30:
-            user_data['BMI Level'] = 'Overweight'
+        if csv_files:
+            file_path = os.path.join(dataset_dir, csv_files[0])
+            app.logger.info(f"Using alternative file: {file_path}")
         else:
-            user_data['BMI Level'] = 'Obese'
-        print(f"Your BMI category: {user_data['BMI Level']}")
+            app.logger.error("No CSV files found in the dataset directory.")
+            return False
 
-    # Health conditions with validation
-    while True:
-        hypertension = input("Do you have hypertension (Yes/No) or press Enter to skip: ").strip().capitalize()
-        if not hypertension or hypertension in ['Yes', 'No']:
-            if hypertension == 'Yes':
-                user_data['Hypertension'] = 1
-            elif hypertension == 'No':
-                user_data['Hypertension'] = 0
-            break
-        else:
-            print("Please enter Yes or No for hypertension.")
+    # Load the data
+    df = load_and_explore_data(file_path)
+    if df is None:
+        app.logger.error("Failed to load data.")
+        return False
 
-    while True:
-        diabetes = input("Do you have diabetes (Yes/No) or press Enter to skip: ").strip().capitalize()
-        if not diabetes or diabetes in ['Yes', 'No']:
-            if diabetes == 'Yes':
-                user_data['Diabetes'] = 1
-            elif diabetes == 'No':
-                user_data['Diabetes'] = 0
-            break
-        else:
-            print("Please enter Yes or No for diabetes.")
+    # Feature engineering
+    df_processed = feature_engineering(df)
+    if df_processed is None:
+        app.logger.error("Feature engineering failed.")
+        return False
 
-    # Fitness goals
-    print("\nFitness Goals:")
-    print("1. Weight Loss")
-    print("2. Weight Gain")
-    print("3. Muscular Fitness")
-    print("4. Overall Health")
+    # Prepare data for KNN
+    X_scaled, features_list, scaler_obj = prepare_data_for_knn(df_processed)
+    if X_scaled is None:
+        app.logger.error("Data preparation failed.")
+        return False
 
-    goals = {
-        '1': 'Weight Loss',
-        '2': 'Weight Gain',
-        '3': 'Muscular Fitness',
-        '4': 'Overall Health'
-    }
+    # Train KNN model
+    knn = train_knn_model(X_scaled, n_neighbors=3)
+    if knn is None:
+        app.logger.error("Model training failed.")
+        return False
 
-    while True:
-        goal_choice = input("Choose your fitness goal (1-4) or press Enter to skip: ").strip()
-        if not goal_choice:
-            break
-        if goal_choice in goals:
-            user_data['Fitness Goal'] = goals[goal_choice]
-            break
-        else:
-            print("Please enter a number between 1 and 4.")
+    # Save model components
+    knn_model = knn
+    features = features_list
+    scaler = scaler_obj
 
-    # Validate if we have enough data
-    required_fields = ['Age', 'Height', 'Weight']
-    missing_fields = [field for field in required_fields if field not in user_data]
-
-    if missing_fields:
-        print(f"\nWarning: Missing recommended data: {', '.join(missing_fields)}")
-        print("Recommendations may be less accurate without this information.")
-        proceed = input("Would you like to continue anyway? (Yes/No): ").strip().lower()
-        if proceed != 'yes':
-            print("Please try again with more complete information.")
-            return get_user_input()
-
-    return user_data
+    app.logger.info("Recommendation system successfully initialized!")
+    return True
 
 
-# Function to format the final recommendation for display
-def format_personalized_recommendation(recommendation, explanation):
-    """Format the recommendation for display."""
-    if not recommendation:
-        return "Unable to generate a recommendation with the provided data."
-
-    formatted = "\n===== PERSONALIZED FITNESS RECOMMENDATION =====\n\n"
-    formatted += explanation + "\n"
-
-    if 'Exercises' in recommendation and recommendation['Exercises']:
-        formatted += "EXERCISE PLAN:\n"
-        formatted += f"{recommendation['Exercises']}\n\n"
-
-    if 'Equipment' in recommendation and recommendation['Equipment']:
-        formatted += "RECOMMENDED EQUIPMENT:\n"
-        formatted += f"{recommendation['Equipment']}\n\n"
-
-    formatted += "PERSONALIZED NUTRITION PLAN:\n"
-
-    if 'Diet (Vegetable)' in recommendation and recommendation['Diet (Vegetable)']:
-        formatted += f"Vegetables: {recommendation['Diet (Vegetable)']}\n"
-
-    if 'Diet (protein intake)' in recommendation and recommendation['Diet (protein intake)']:
-        formatted += f"Protein: {recommendation['Diet (protein intake)']}\n"
-
-    if 'Diet (Juice)' in recommendation and recommendation['Diet (Juice)']:
-        formatted += f"Juice: {recommendation['Diet (Juice)']}\n\n"
-
-    if 'Recommendation' in recommendation and recommendation['Recommendation']:
-        formatted += "GENERAL ADVICE:\n"
-        formatted += f"{recommendation['Recommendation']}\n\n"
-
-    return formatted
+# Route for the home page
+@app.route('/', methods=['GET'])
+def index():
+    return render_template('index.html')
 
 
-def main():
-    """Main function to run the fitness recommendation system."""
-    print("====== FITNESS RECOMMENDATION SYSTEM ======\n")
+# Route for the user input form
+@app.route('/form', methods=['GET'])
+def form():
+    return render_template('form.html')
 
-    try:
-        # Check if the dataset directory exists
-        dataset_dir = "./Dataset"
-        if not os.path.exists(dataset_dir):
-            os.makedirs(dataset_dir)
-            print(f"Created directory {dataset_dir}")
 
-        # File path
-        file_path = "Dataset/gym_recommendation.csv"
+# Route to process form submission and display results
+@app.route('/recommend', methods=['POST'])
+def recommend():
+    if request.method == 'POST':
+        # Extract user data from form
+        user_data = {}
 
-        # Check if the file exists
-        if not os.path.isfile(file_path):
-            print(f"File not found: {file_path}")
-            # Try to find any CSV file in the Dataset directory
-            csv_files = [f for f in os.listdir(dataset_dir) if f.endswith('.csv')]
+        # Get gender
+        gender = request.form.get('gender')
+        if gender in ['Male', 'Female']:
+            user_data['Sex'] = 1 if gender == 'Male' else 0
 
-            if csv_files:
-                file_path = os.path.join(dataset_dir, csv_files[0])
-                print(f"Using alternative file: {file_path}")
+        # Get age
+        age = request.form.get('age')
+        if age and age.isdigit():
+            user_data['Age'] = int(age)
+
+        # Get height
+        height = request.form.get('height')
+        if height and height.replace('.', '', 1).isdigit():
+            user_data['Height'] = float(height)
+
+        # Get weight
+        weight = request.form.get('weight')
+        if weight and weight.replace('.', '', 1).isdigit():
+            user_data['Weight'] = float(weight)
+
+        # Calculate BMI if possible
+        if 'Height' in user_data and 'Weight' in user_data:
+            bmi = user_data['Weight'] / ((user_data['Height'] / 100) ** 2)
+            user_data['BMI'] = bmi
+
+            # Set BMI Level
+            if bmi < 18.5:
+                user_data['BMI Level'] = 'Underweight'
+            elif bmi < 25:
+                user_data['BMI Level'] = 'Normal'
+            elif bmi < 30:
+                user_data['BMI Level'] = 'Overweight'
             else:
-                print("No CSV files found in the Dataset directory.")
-                file_path = input("Please enter the full path to your CSV file: ").strip()
-                if not os.path.isfile(file_path):
-                    print("Invalid file path. Exiting program.")
-                    sys.exit(1)
+                user_data['BMI Level'] = 'Obese'
 
-        # Load the data
-        df = load_and_explore_data(file_path)
-        if df is None:
-            print("Failed to load data. Exiting program.")
-            sys.exit(1)
+        # Get health conditions
+        hypertension = request.form.get('hypertension')
+        user_data['Hypertension'] = 1 if hypertension == 'Yes' else 0
 
-        # Feature engineering
-        df_processed = feature_engineering(df)
-        if df_processed is None:
-            print("Feature engineering failed. Exiting program.")
-            sys.exit(1)
+        diabetes = request.form.get('diabetes')
+        user_data['Diabetes'] = 1 if diabetes == 'Yes' else 0
 
-        # Prepare data for KNN
-        X_scaled, features, scaler = prepare_data_for_knn(df_processed)
-        if X_scaled is None:
-            print("Data preparation failed. Exiting program.")
-            sys.exit(1)
+        # Get fitness goal
+        fitness_goal = request.form.get('fitness_goal')
+        if fitness_goal:
+            user_data['Fitness Goal'] = fitness_goal
 
-        # Train KNN model
-        knn_model = train_knn_model(X_scaled, n_neighbors=3)
-        if knn_model is None:
-            print("Model training failed. Exiting program.")
-            sys.exit(1)
+        # Check if we have the minimum required data
+        if not all(k in user_data for k in ['Age', 'Height', 'Weight']):
+            flash('Please provide at least your age, height, and weight for better recommendations.', 'warning')
+            return redirect(url_for('form'))
 
-        print("\nRecommendation system successfully built!")
+        # Generate recommendations
+        recommendations = generate_knn_recommendations(knn_model, user_data, features, scaler)
 
-        while True:
-            # Get user input
-            print("\nLet's create a personalized fitness recommendation for you.")
-            user_data = get_user_input()
+        if recommendations:
+            personalized_rec = generate_personalized_recommendation(recommendations, user_data)
+            explanation = explain_personalized_recommendation(personalized_rec, user_data)
 
-            # Generate recommendations
-            recommendations = generate_knn_recommendations(knn_model, user_data, features, scaler)
+            # Store recommendation in session
+            session['recommendation'] = personalized_rec
+            session['explanation'] = explanation
+            session['similar_profiles'] = [
+                {'id': rec['Profile ID'], 'similarity': f"{rec['Similarity']:.2f}"}
+                for rec in recommendations
+            ]
 
-            if recommendations:
-                personalized_rec = generate_personalized_recommendation(recommendations, user_data)
-                explanation = explain_personalized_recommendation(personalized_rec, user_data)
-
-                # Display recommendation
-                formatted_rec = format_personalized_recommendation(personalized_rec, explanation)
-                print(formatted_rec)
-
-                # Show nearest neighbors for transparency
-                print("\nSimilar profiles used for your recommendation:")
-                for i, rec in enumerate(recommendations):
-                    print(f"{i + 1}. Profile #{rec['Profile ID']} (Similarity: {rec['Similarity']:.2f})")
-            else:
-                print("Unable to generate recommendations. Please check your input data.")
-
-            # Ask if user wants to try again
-            retry = input("\nWould you like to try again with different information? (Yes/No): ").strip().lower()
-            if retry != 'yes':
-                break
-
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        import traceback
-        traceback.print_exc()
+            return render_template(
+                'recommendation.html',
+                recommendation=personalized_rec,
+                explanation=explanation,
+                similar_profiles=session['similar_profiles'],
+                user_data=user_data
+            )
+        else:
+            flash('Unable to generate recommendations. Please check your input data.', 'error')
+            return redirect(url_for('form'))
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    # Create necessary directories
+    os.makedirs('templates', exist_ok=True)
+    os.makedirs('static', exist_ok=True)
+    os.makedirs('static/css', exist_ok=True)
+    os.makedirs('static/dataset', exist_ok=True)
+
+    # Initialize the model
+    if initialize_model():
+        app.run(debug=True)
+    else:
+        print("Failed to initialize the model. Please check the logs for more information.")
