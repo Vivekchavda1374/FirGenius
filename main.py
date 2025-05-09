@@ -1,274 +1,437 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import NearestNeighbors
+import os
+import sys
+
+# Global variable to store the original dataframe for recommendations
+original_df = None
 
 
-# PHASE 1: LOAD DATA AND CLEAN DATASET
-def load_and_clean_data(file_path):
-    print("Data is loading.......")
-    df = pd.read_csv(file_path)
-    print(df.shape)
-    print("\nMissing values before cleaning:")
-    print(df.isnull().sum())
+# PHASE 1: LOAD DATA, EXPLORE AND CLEAN DATASET
+def load_and_explore_data(file_path):
+    """Load and clean the dataset from a CSV file."""
+    print("Data is loading...")
 
-    # Fix the warnings by avoiding chained assignments with inplace=True
-    # Instead, use direct assignment with loc or update the entire column
-    df = df.copy()  # Create a copy to avoid modifying views
+    try:
+        # Try to infer separator automatically
+        df = pd.read_csv(file_path)
 
-    # Fill missing values in numerical columns
-    df['Age'] = df['Age'].fillna(df['Age'].median())
-    df['Height'] = df['Height'].fillna(df['Height'].median())
-    df['Weight'] = df['Weight'].fillna(df['Weight'].median())
+        # If the data didn't load properly (only one column), try tab separator
+        if len(df.columns) == 1:
+            df = pd.read_csv(file_path, sep='\t')
 
-    # Fill missing values in categorical columns
-    category_data = ['Sex', 'Hypertension', 'Diabetes', 'Fitness Goal',
-                     'Fitness Type', 'Exercises', 'Equipment',
-                     'Diet (Vegetable)', 'Diet (protein intake)', 'Diet (Juice)']
+        print(f"Dataset loaded successfully with shape: {df.shape}")
 
-    for col in category_data:
-        if col in df.columns:
-            df[col] = df[col].fillna(df[col].mode()[0])
+        # Convert height from meters to cm if necessary
+        if 'Height' in df.columns and df['Height'].max() < 3:  # If height is in meters
+            df['Height'] = df['Height'] * 100
+            print("Height converted from meters to centimeters")
 
-    # Fixed BMI calculation logic
-    if 'BMI' in df.columns:
-        mask = df['BMI'].isnull()
-        df.loc[mask, 'BMI'] = df.loc[mask, 'Weight'] / ((df.loc[mask, 'Height'] / 100) ** 2)
-    else:
-        df['BMI'] = df['Weight'] / ((df['Height'] / 100) ** 2)
+        # Check for duplicates
+        dup_count = df.duplicated().sum()
+        if dup_count > 0:
+            print(f"Found {dup_count} duplicate rows - removing duplicates")
+            df = df.drop_duplicates()
 
-    if 'BMI Level' not in df.columns:
-        df['BMI Level'] = pd.cut(
-            df['BMI'],
-            bins=[0, 18.5, 24.9, 29.9, 100],
-            labels=['Underweight', 'Normal', 'Overweight', 'Obese']
-        )
+        # Create a copy to avoid modifying views
+        df = df.copy()
 
-    # Map categorical values to numerical
-    df['Sex'] = df['Sex'].map({'Male': 1, 'Female': 0})
-    df['Hypertension'] = df['Hypertension'].map({'Yes': 1, 'No': 0})
-    df['Diabetes'] = df['Diabetes'].map({'Yes': 1, 'No': 0})
+        # Check missing values
+        missing_before = df.isnull().sum().sum()
+        if missing_before > 0:
+            print(f"Found {missing_before} missing values - cleaning data")
 
-    print("\nMissing values after cleaning:")
-    print(df.isnull().sum())
+            # Fill missing values in numerical columns
+            for col in df.select_dtypes(include=['number']).columns:
+                if df[col].isnull().sum() > 0:
+                    df[col] = df[col].fillna(df[col].median())
 
-    return df
+            # Fill missing values in categorical columns
+            category_cols = df.select_dtypes(include=['object']).columns
+            for col in category_cols:
+                if df[col].isnull().sum() > 0:
+                    df[col] = df[col].fillna(df[col].mode()[0] if not df[col].mode().empty else "Unknown")
+
+        # Handle BMI calculation
+        if 'BMI' not in df.columns and 'Height' in df.columns and 'Weight' in df.columns:
+            df['BMI'] = df['Weight'] / ((df['Height'] / 100) ** 2)
+            print("BMI calculated from height and weight")
+        elif 'BMI' in df.columns:
+            # Fill missing BMI values
+            mask = df['BMI'].isnull()
+            if mask.any() and 'Height' in df.columns and 'Weight' in df.columns:
+                df.loc[mask, 'BMI'] = df.loc[mask, 'Weight'] / ((df.loc[mask, 'Height'] / 100) ** 2)
+
+        # Use 'Level' column as BMI level if available, otherwise calculate
+        if 'Level' in df.columns:
+            df['BMI Level'] = df['Level']
+        elif 'BMI' in df.columns:
+            # Add BMI Level if not present
+            df['BMI Level'] = pd.cut(
+                df['BMI'],
+                bins=[0, 18.5, 24.9, 29.9, 100],
+                labels=['Underweight', 'Normal', 'Overweight', 'Obese']
+            )
+            print("BMI Level categorized based on BMI values")
+
+        # Map categorical values to numerical for model training if present
+        if 'Sex' in df.columns:
+            sex_mapping = {'Male': 1, 'Female': 0}
+            df['Sex'] = df['Sex'].map(lambda x: sex_mapping.get(x, np.nan))
+            df['Sex'] = df['Sex'].fillna(df['Sex'].median())
+
+        if 'Hypertension' in df.columns:
+            yn_mapping = {'Yes': 1, 'No': 0}
+            df['Hypertension'] = df['Hypertension'].map(lambda x: yn_mapping.get(x, np.nan))
+            df['Hypertension'] = df['Hypertension'].fillna(0)  # Default to no hypertension
+
+        if 'Diabetes' in df.columns:
+            df['Diabetes'] = df['Diabetes'].map(lambda x: yn_mapping.get(x, np.nan))
+            df['Diabetes'] = df['Diabetes'].fillna(0)  # Default to no diabetes
+
+        # Check final missing values
+        missing_after = df.isnull().sum().sum()
+        if missing_after > 0:
+            print(f"Warning: {missing_after} missing values remain after cleaning")
+            print(df.isnull().sum())
+        else:
+            print("Data cleaning complete - no missing values remain")
+
+        return df
+
+    except Exception as e:
+        print(f"Error loading data: {str(e)}")
+        print("Please make sure the file exists and is in the correct format")
+        return None
 
 
 # PHASE 2: FEATURE ENGINEERING
 def feature_engineering(df):
-    df = df.copy()  # Create a copy to avoid modifying views
+    """Add new features to improve recommendation quality."""
+    if df is None:
+        print("No data available for feature engineering")
+        return None
 
-    # Create age groups
-    df['Age_Group'] = pd.cut(
-        df['Age'],
-        bins=[0, 18, 35, 50, 65, 100],
-        labels=['Teen', 'Young_Adult', 'Adult', 'Middle_Age', 'Senior']
-    )
+    print("\nPerforming feature engineering...")
+    df = df.copy()
+
+    # Create age groups if Age column exists
+    if 'Age' in df.columns:
+        df['Age_Group'] = pd.cut(
+            df['Age'],
+            bins=[0, 18, 35, 50, 65, 100],
+            labels=['Teen', 'Young_Adult', 'Adult', 'Middle_Age', 'Senior']
+        )
+        print("Age groups created")
 
     # Initialize health risk score
     df['Health_Risk_Score'] = 0
-
-    # Update health risk scores - avoiding inplace modifications
-    # Instead of incrementing with +=, we'll set the entire column at once
     risk_score = df['Health_Risk_Score'].copy()
-    risk_score = np.where(df['Hypertension'] == 1, risk_score + 1, risk_score)
-    risk_score = np.where(df['Diabetes'] == 1, risk_score + 1, risk_score)
-    risk_score = np.where(df['BMI'] < 18.5, risk_score + 1, risk_score)
-    risk_score = np.where(df['BMI'] > 30, risk_score + 1, risk_score)
-    risk_score = np.where(df['BMI'] > 35, risk_score + 1, risk_score)
+
+    # Update health risk scores based on available fields
+    if 'Hypertension' in df.columns:
+        risk_score = np.where(df['Hypertension'] == 1, risk_score + 1, risk_score)
+
+    if 'Diabetes' in df.columns:
+        risk_score = np.where(df['Diabetes'] == 1, risk_score + 1, risk_score)
+
+    if 'BMI' in df.columns:
+        risk_score = np.where(df['BMI'] < 18.5, risk_score + 1, risk_score)
+        risk_score = np.where(df['BMI'] > 30, risk_score + 1, risk_score)
+        risk_score = np.where(df['BMI'] > 35, risk_score + 1, risk_score)
+
     df['Health_Risk_Score'] = risk_score
-
-    # Set compatibility scores - using loc to avoid warnings
-    df['Cardio_Compatibility'] = 1
-    df.loc[(df['Hypertension'] == 1) & (df['Age'] > 60), 'Cardio_Compatibility'] = 0.5
-
-    df['Strength_Compatibility'] = 1
-    df.loc[(df['BMI'] < 18.5), 'Strength_Compatibility'] = 0.7
-
-    # Set dietary needs
-    df['Needs_Low_Sodium'] = (df['Hypertension'] == 1).astype(int)
-    df['Needs_Low_Carb'] = (df['Diabetes'] == 1).astype(int)
-
-    if 'Fitness Goal' in df.columns:
-        df['Needs_High_Protein'] = (df['Fitness Goal'] == 'Muscle Gain').astype(int)
-    else:
-        df['Needs_High_Protein'] = 0
+    print("Health risk scores calculated")
 
     # One-hot encode categorical features
     categorical_columns = []
-    if 'BMI Level' in df.columns:
-        categorical_columns.append('BMI Level')
-    if 'Fitness Type' in df.columns:
-        categorical_columns.append('Fitness Type')
-    if 'Fitness Goal' in df.columns:
-        categorical_columns.append('Fitness Goal')
-    categorical_columns.append('Age_Group')
 
-    dummies_df = pd.get_dummies(df[categorical_columns], prefix=categorical_columns)
-    df_numeric = df.drop(categorical_columns, axis=1)
-    df_final = pd.concat([df_numeric, dummies_df], axis=1)
+    # Check if columns exist before adding them to encoding list
+    for col in ['BMI Level', 'Age_Group', 'Fitness Type', 'Fitness Goal']:
+        if col in df.columns:
+            categorical_columns.append(col)
 
-    print(f"Dataset shape after feature engineering: {df_final.shape}")
-    print(f"New features added: {df_final.columns.tolist()}")
+    # Only apply one-hot encoding if we have categorical columns
+    if categorical_columns:
+        print(f"One-hot encoding categorical features: {', '.join(categorical_columns)}")
+        dummies_df = pd.get_dummies(df[categorical_columns], prefix=categorical_columns)
+        df_numeric = df.drop(categorical_columns, axis=1)
+        df_final = pd.concat([df_numeric, dummies_df], axis=1)
+    else:
+        df_final = df
+        print("No categorical columns found for one-hot encoding")
+
+    print(f"Feature engineering complete. Dataset shape: {df_final.shape}")
     return df_final
 
 
-# PHASE 3: MODEL DEVELOPMENT
-def prepare_training_data(df):
-    numerical_features = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+# PHASE 3: MODEL DEVELOPMENT - K-NEAREST NEIGHBORS APPROACH
+def prepare_data_for_knn(df):
+    """Prepare data for K-Nearest Neighbors model."""
+    if df is None:
+        print("No data available for KNN preparation")
+        return None, None, None
 
-    if 'ID' in numerical_features:
-        numerical_features.remove('ID')
-    if 'Recommendation' in numerical_features:
-        numerical_features.remove('Recommendation')
+    print("\nPreparing data for KNN model...")
+    global original_df
+    original_df = df.copy()
 
-    dummy_feature = [col for col in df.columns if
-                     any(col.startswith(prefix) for prefix in
-                         ['BMI Level_', 'Fitness Goal_', 'Fitness Type_', 'Age_Group_'])]
-    feature = numerical_features + dummy_feature
+    # Select available features for similarity calculation
+    base_features = ['Age', 'Height', 'Weight', 'BMI', 'Health_Risk_Score']
+    optional_features = ['Sex', 'Hypertension', 'Diabetes']
 
-    if 'Recommendation' in df.columns:
-        x = df[feature]
-        y = df['Recommendation']
+    # Filter to only include features that exist in the dataframe
+    numerical_features = [f for f in base_features + optional_features if f in df.columns]
+    print(f"Using numerical features: {', '.join(numerical_features)}")
 
-        # split data in train and test
-        x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.3, random_state=42)
-        return x_train, x_test, y_train, y_test
-    else:
-        print("Error: Recommendation column not found.")
-        return None, None, None, None
+    # Get dummy columns for categorical variables
+    dummy_prefixes = ['BMI Level_', 'Fitness Goal_', 'Fitness Type_', 'Age_Group_']
+    dummy_features = [col for col in df.columns if
+                      any(col.startswith(prefix) for prefix in dummy_prefixes)]
 
+    if dummy_features:
+        print(f"Using {len(dummy_features)} one-hot encoded features")
 
-def train_model(x_train, y_train):
-    model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=10,
-        min_samples_split=5,
-        random_state=42
-    )
-    x_train = x_train.astype('float32')
-    model.fit(x_train, y_train)
-    return model
+    features = numerical_features + dummy_features
 
+    # Make sure all features exist in the dataframe
+    features = [f for f in features if f in df.columns]
 
-def evaluate_model(model, x_test, y_test):
-    x_test = x_test.astype('float32')
-    y_pred = model.predict(x_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    print(f"Accuracy: {accuracy:.4f}")
-    print("\nClassification Report:")
-    # Add zero_division parameter to avoid warnings
-    print(classification_report(y_test, y_pred, zero_division=0))
+    if not features:
+        print("Error: No valid features found for KNN model")
+        return None, None, None
 
-    # Feature importance
-    feature_importances = pd.DataFrame({
-        'Feature': x_test.columns,
-        'Importance': model.feature_importances_,
-    }).sort_values('Importance', ascending=False)
-    print("\nTop 10 Important Features:")
-    print(feature_importances.head(10))
+    # Extract features
+    X = df[features].copy()
 
-    return accuracy, feature_importances
+    # Fill any remaining NaN values with median for numeric columns
+    for col in X.select_dtypes(include=['number']).columns:
+        X[col] = X[col].fillna(X[col].median())
+
+    # Fill any remaining NaN values with 0 for dummy columns
+    for col in dummy_features:
+        if col in X.columns:
+            X[col] = X[col].fillna(0)
+
+    # Standardize numerical features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    print(f"Data prepared successfully with {X.shape[1]} features")
+
+    return X_scaled, features, scaler
 
 
-# PHASE 4: RECOMMENDATION PIPELINE
-def preprocess_input(user_data, feature_names):
-    if not isinstance(user_data, pd.DataFrame):
-        user_data = pd.DataFrame([user_data])  # Convert dict to DataFrame if needed
+def train_knn_model(X_scaled, n_neighbors=3):
+    """Train a K-Nearest Neighbors model."""
+    if X_scaled is None:
+        print("No scaled data available for KNN model training")
+        return None
+
+    print(f"\nTraining KNN model with {n_neighbors} neighbors...")
+    try:
+        # Train KNN model
+        knn_model = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto')
+        knn_model.fit(X_scaled)
+        print("KNN model trained successfully")
+        return knn_model
+    except Exception as e:
+        print(f"Error training KNN model: {str(e)}")
+        return None
+
+
+# Function to preprocess new user data for KNN
+def preprocess_user_for_knn(user_data, features, scaler):
+    """Process user input data to make it compatible with the KNN model."""
+    if not user_data or not features or not scaler:
+        print("Missing data for user preprocessing")
+        return None
+
+    print("\nProcessing your profile for the recommendation system...")
+    user_df = pd.DataFrame([user_data])
 
     # Calculate BMI if not present
-    if 'BMI' not in user_data.columns and 'Height' in user_data.columns and 'Weight' in user_data.columns:
-        user_data['BMI'] = user_data['Weight'] / ((user_data['Height'] / 100) ** 2)
+    if 'BMI' not in user_df.columns and 'Height' in user_df.columns and 'Weight' in user_df.columns:
+        user_df['BMI'] = user_df['Weight'] / ((user_df['Height'] / 100) ** 2)
+        print(f"Your BMI has been calculated as {user_df['BMI'].values[0]:.2f}")
 
-    # Initialize and calculate health risk score
-    user_data['Health_Risk_Score'] = 0
+    # Add BMI Level if needed
+    if 'BMI Level' not in user_df.columns and 'BMI' in user_df.columns:
+        user_df['BMI Level'] = pd.cut(
+            user_df['BMI'],
+            bins=[0, 18.5, 24.9, 29.9, 100],
+            labels=['Underweight', 'Normal', 'Overweight', 'Obese']
+        )
+        print(f"Your BMI category: {user_df['BMI Level'].values[0]}")
 
-    # Use cleaner approach for risk score calculation
-    risk_score = user_data['Health_Risk_Score'].copy()
-
-    if 'Hypertension' in user_data.columns:
-        risk_score = np.where(user_data['Hypertension'] == 1, risk_score + 1, risk_score)
-    if 'Diabetes' in user_data.columns:
-        risk_score = np.where(user_data['Diabetes'] == 1, risk_score + 1, risk_score)
-    if 'BMI' in user_data.columns:
-        risk_score = np.where(user_data['BMI'] < 18.5, risk_score + 1, risk_score)
-        risk_score = np.where(user_data['BMI'] > 30, risk_score + 1, risk_score)
-        risk_score = np.where(user_data['BMI'] > 35, risk_score + 1, risk_score)
-
-    user_data['Health_Risk_Score'] = risk_score
-
-    # Set compatibility scores
-    user_data['Cardio_Compatibility'] = 1
-    if 'Hypertension' in user_data.columns and 'Age' in user_data.columns:
-        user_data.loc[(user_data['Hypertension'] == 1) & (user_data['Age'] > 60), 'Cardio_Compatibility'] = 0.5
-
-    user_data['Strength_Compatibility'] = 1
-    if 'BMI' in user_data.columns:
-        user_data.loc[(user_data['BMI'] < 18.5), 'Strength_Compatibility'] = 0.7
-
-    # Set dietary needs
-    if 'Hypertension' in user_data.columns:
-        user_data['Needs_Low_Sodium'] = (user_data['Hypertension'] == 1).astype(int)
-    if 'Diabetes' in user_data.columns:
-        user_data['Needs_Low_Carb'] = (user_data['Diabetes'] == 1).astype(int)
-    if 'Fitness Goal' in user_data.columns:
-        user_data['Needs_High_Protein'] = (user_data['Fitness Goal'] == 'Muscle Gain').astype(int)
-
-    # Create age group if age is available
-    if 'Age' in user_data.columns:
-        user_data['Age_Group'] = pd.cut(
-            user_data['Age'],
+    # Create age groups if needed
+    if 'Age_Group' not in user_df.columns and 'Age' in user_df.columns:
+        user_df['Age_Group'] = pd.cut(
+            user_df['Age'],
             bins=[0, 18, 35, 50, 65, 100],
             labels=['Teen', 'Young_Adult', 'Adult', 'Middle_Age', 'Senior']
         )
 
-    # One-hot encode categorical features
-    categorical_columns = []
-    if 'Age_Group' in user_data.columns:
-        categorical_columns.append('Age_Group')
-    if 'BMI Level' in user_data.columns:
-        categorical_columns.append('BMI Level')
-    if 'Fitness Goal' in user_data.columns:
-        categorical_columns.append('Fitness Goal')
-    if 'Fitness Type' in user_data.columns:
-        categorical_columns.append('Fitness Type')
+    # Initialize health risk score
+    user_df['Health_Risk_Score'] = 0
+    risk_score = user_df['Health_Risk_Score'].copy()
 
-    # Create one-hot encoding for each category
-    for col in categorical_columns:
-        if col in user_data.columns:
-            dummies = pd.get_dummies(user_data[col], prefix=col)
-            user_data = pd.concat([user_data, dummies], axis=1)
-            user_data = user_data.drop(col, axis=1)
+    # Update health risk based on available data
+    if 'Hypertension' in user_df.columns:
+        risk_score = np.where(user_df['Hypertension'] == 1, risk_score + 1, risk_score)
+    if 'Diabetes' in user_df.columns:
+        risk_score = np.where(user_df['Diabetes'] == 1, risk_score + 1, risk_score)
+    if 'BMI' in user_df.columns:
+        risk_score = np.where(user_df['BMI'] < 18.5, risk_score + 1, risk_score)
+        risk_score = np.where(user_df['BMI'] > 30, risk_score + 1, risk_score)
+        risk_score = np.where(user_df['BMI'] > 35, risk_score + 1, risk_score)
 
-    # Create a DataFrame with all required feature columns
-    processed_data = pd.DataFrame(columns=feature_names)
+    user_df['Health_Risk_Score'] = risk_score
+
+    # One-hot encode categorical columns
+    for col in ['BMI Level', 'Fitness Goal', 'Fitness Type', 'Age_Group']:
+        if col in user_df.columns:
+            dummies = pd.get_dummies(user_df[col], prefix=col)
+            user_df = pd.concat([user_df, dummies], axis=1)
+            user_df = user_df.drop(col, axis=1)
+
+    # Create feature vector with same columns as training data
+    feature_vector = pd.DataFrame(columns=features)
 
     # Fill in available features
-    for feature in feature_names:
-        if feature in user_data.columns:
-            processed_data[feature] = user_data[feature]
+    for feature in features:
+        if feature in user_df.columns:
+            feature_vector[feature] = user_df[feature]
         else:
-            processed_data[feature] = 0  # Default value for missing features
+            feature_vector[feature] = 0  # Default value for missing features
 
-    # Convert to float to ensure compatibility with the model
-    processed_data = processed_data.astype(float)
-
-    return processed_data
-
-
-def generate_recommendations(model, user_data, feature_names):
-    processed_data = preprocess_input(user_data, feature_names)
-    recommendation = model.predict(processed_data)[0]
-    probabilities = model.predict_proba(processed_data)
-    confidence = np.max(probabilities)
-
-    return recommendation, confidence
+    # Scale the feature vector
+    try:
+        feature_vector_scaled = scaler.transform(feature_vector)
+        print("Your profile has been successfully processed")
+        return feature_vector_scaled
+    except Exception as e:
+        print(f"Error processing your profile: {str(e)}")
+        return None
 
 
-def explain_recommendation(recommendation, user_data):
-    explanation = f"Based on your profile, we recommend: {recommendation}\n\n"
+# Generate recommendations using KNN
+def generate_knn_recommendations(knn_model, user_data, features, scaler, n_recommendations=3):
+    """Generate fitness recommendations based on similar profiles."""
+    if knn_model is None or user_data is None:
+        print("Missing model or user data for recommendations")
+        return []
+
+    print("\nFinding similar profiles for recommendations...")
+    user_vector = preprocess_user_for_knn(user_data, features, scaler)
+
+    if user_vector is None:
+        return []
+
+    try:
+        # Find nearest neighbors
+        distances, indices = knn_model.kneighbors(user_vector)
+
+        # Get recommendations from nearest neighbors
+        recommendations = []
+        for i in range(min(len(indices[0]), n_recommendations)):
+            idx = indices[0][i]
+            profile = original_df.iloc[idx]
+
+            # Create a recommendation dictionary with available fields
+            recommendation = {
+                'Similarity': 1 - distances[0][i],  # Convert distance to similarity score
+                'Profile ID': idx
+            }
+
+            # Add available fields from the profile
+            for field in ['Exercises', 'Equipment', 'Diet (Vegetable)',
+                          'Diet (protein intake)', 'Diet (Juice)', 'Recommendation']:
+                if field in profile and pd.notna(profile[field]):
+                    recommendation[field] = profile[field]
+                else:
+                    recommendation[field] = "No recommendation available"
+
+            recommendations.append(recommendation)
+
+        print(f"Found {len(recommendations)} similar profiles")
+        return recommendations
+    except Exception as e:
+        print(f"Error generating recommendations: {str(e)}")
+        return []
+
+
+# Generate personalized recommendations by blending multiple neighbors
+def generate_personalized_recommendation(recommendations, user_data):
+    """Create a personalized recommendation based on similar profiles and user data."""
+    if not recommendations:
+        return {}
+
+    print("\nCreating your personalized fitness plan...")
+    top_rec = recommendations[0]
+
+    # Create personalized recommendation with available fields
+    personalized = {}
+    for field in ['Exercises', 'Equipment', 'Diet (Vegetable)',
+                  'Diet (protein intake)', 'Diet (Juice)', 'Recommendation']:
+        if field in top_rec:
+            personalized[field] = top_rec[field]
+        else:
+            personalized[field] = "No recommendation available"
+
+    # Add health-specific modifications
+    if user_data.get('Hypertension', 0) == 1:
+        personalized['Diet (Vegetable)'] += " (Low sodium options recommended)"
+        personalized['Recommendation'] += " Monitor blood pressure regularly during exercise."
+
+    if user_data.get('Diabetes', 0) == 1:
+        personalized['Diet (Juice)'] += " (Sugar-free or diluted options only)"
+        personalized['Recommendation'] += " Check blood sugar before and after workouts."
+
+    # Customize based on fitness goal
+    goal = user_data.get('Fitness Goal', '')
+    if goal:
+        if 'Weight Loss' in goal:
+            personalized['Exercises'] += " Focus on higher repetitions with moderate weight."
+        elif 'Weight Gain' in goal:
+            personalized['Exercises'] += " Focus on progressive overload with heavier weights."
+        elif 'Muscular Fitness' in goal:
+            personalized['Exercises'] += " Focus on compound movements and progressive resistance training."
+
+    # Customize based on age
+    age = user_data.get('Age', None)
+    if age is not None:
+        if age > 60:
+            personalized['Equipment'] += " Consider using equipment with better joint support."
+        elif age < 18:
+            personalized['Equipment'] += " Start with bodyweight exercises before progressing to weights."
+
+    print("Personalized plan created successfully")
+    return personalized
+
+
+# Function to explain recommendation with more personalization
+def explain_personalized_recommendation(recommendation, user_data):
+    """Create a personalized explanation of the recommendation."""
+    if not recommendation or not user_data:
+        return "Unable to generate explanation with insufficient data."
+
+    explanation = f"Based on your unique profile, we've created a personalized recommendation:\n\n"
+
+    # Explain based on key metrics
+    bmi = user_data.get('BMI', None)
+    if bmi is not None:
+        if bmi < 18.5:
+            explanation += f"BMI Status: Your BMI of {bmi:.1f} indicates you're underweight. This plan focuses on building strength and healthy weight gain.\n\n"
+        elif bmi >= 25 and bmi < 30:
+            explanation += f"BMI Status: Your BMI of {bmi:.1f} indicates you're overweight. This plan balances cardio and strength training for optimal weight management.\n\n"
+        elif bmi >= 30:
+            explanation += f"BMI Status: Your BMI of {bmi:.1f} indicates obesity. This plan prioritizes joint-friendly exercises and nutritional guidance.\n\n"
+        else:
+            explanation += f"BMI Status: Your BMI of {bmi:.1f} is in the normal range. This plan focuses on maintaining your healthy weight while improving fitness.\n\n"
+
+    # Explain based on health conditions
     health_conditions = []
     if user_data.get('Hypertension', 0) == 1:
         health_conditions.append("hypertension")
@@ -276,246 +439,286 @@ def explain_recommendation(recommendation, user_data):
         health_conditions.append("diabetes")
 
     if health_conditions:
-        explanation += f"This recommendation takes into account your health conditions: {', '.join(health_conditions)}.\n"
+        explanation += f"Health Considerations: Your plan is adjusted for {', '.join(health_conditions)}, with appropriate intensity levels and dietary recommendations.\n\n"
 
-    bmi = user_data.get('BMI', None)
-    if bmi is not None:
-        if bmi < 18.5:
-            explanation += "As your BMI indicates you're underweight, we've focused on nutrition that supports healthy weight gain.\n"
-        elif bmi >= 25 and bmi < 30:
-            explanation += "As your BMI indicates you're overweight, we've included elements to support healthy weight management.\n"
-        elif bmi >= 30:
-            explanation += "As your BMI indicates obesity, we've prioritized gentle exercise options and nutritional guidance.\n"
-
+    # Explain based on age
     age = user_data.get('Age', None)
     if age is not None:
         if age < 18:
-            explanation += "This plan is tailored for teenagers, focusing on development and establishing healthy habits.\n"
+            explanation += f"Age Consideration: At {age} years old, this plan focuses on fundamentals, proper form, and developing healthy habits.\n\n"
         elif age > 65:
-            explanation += "This plan is adapted for seniors, emphasizing low-impact activities and joint health.\n"
+            explanation += f"Age Consideration: At {age} years old, this plan emphasizes joint health, flexibility, and appropriate intensity levels.\n\n"
+        else:
+            explanation += f"Age Consideration: At {age} years old, this plan balances challenge and sustainability for long-term health.\n\n"
 
+    # Explain based on fitness goal
     fitness_goal = user_data.get('Fitness Goal', None)
     if fitness_goal:
-        explanation += f"Your goal of '{fitness_goal}' has shaped the core of this recommendation.\n"
+        explanation += f"Fitness Goal: Your goal of '{fitness_goal}' is the foundation of this recommendation, with specific exercise patterns and nutritional guidance to support it.\n\n"
 
     return explanation
 
 
-def safety_check(recommendation, user_data):
-    warnings = []
-
-    # Check for high-intensity recommendations for people with heart conditions
-    if (user_data.get('Hypertension', 0) == 1 and
-            user_data.get('Age', 0) > 60 and
-            "high intensity" in recommendation.lower()):
-        warnings.append(
-            "CAUTION: High-intensity exercises should be approached with care given your hypertension. Consult your doctor.")
-
-    # Check for high-impact exercises for obese individuals
-    if (user_data.get('BMI', 0) > 35 and
-            any(x in recommendation.lower() for x in ["jumping", "running", "high impact"])):
-        warnings.append(
-            "CAUTION: High-impact exercises may strain your joints. Consider low-impact alternatives like swimming.")
-
-    # Check for diabetes-specific nutritional guidance
-    if (user_data.get('Diabetes', 0) == 1 and
-            not any(x in recommendation.lower() for x in ["low carb", "low sugar", "glycemic index"])):
-        warnings.append(
-            "NOTE: Since you have diabetes, pay special attention to carbohydrate intake and monitor blood sugar levels.")
-
-    return warnings
-
-
+# Function to get user input with validation
 def get_user_input():
+    """Collect and validate user input for a fitness recommendation."""
     user_data = {}
 
-    # Get gender input
-    while True:
-        gender = input("Enter your gender (Male/Female): ").strip().capitalize()
-        if gender in ['Male', 'Female']:
-            user_data['Sex'] = 1 if gender == 'Male' else 0
-            break
-        else:
-            print("Invalid input. Please enter 'Male' or 'Female'.")
+    print("\n--- Please enter your personal information ---")
 
-    # Get age input
+    # Get gender input
+    gender = input("Enter your gender (Male/Female) or press Enter to skip: ").strip().capitalize()
+    if gender in ['Male', 'Female']:
+        user_data['Sex'] = 1 if gender == 'Male' else 0
+
+    # Get age input with validation
     while True:
+        age_input = input("Enter your age (years) or press Enter to skip: ").strip()
+        if not age_input:
+            break
         try:
-            age = int(input("Enter your age (years): "))
+            age = int(age_input)
             if 10 <= age <= 100:
                 user_data['Age'] = age
                 break
             else:
-                print("Please enter a valid age between 10 and 100.")
+                print("Please enter a valid age between 10 and 100 years.")
         except ValueError:
-            print("Invalid input. Please enter a number.")
+            print("Please enter a valid number for age.")
 
-    # Get height input
+    # Get height input with validation
     while True:
+        height_input = input("Enter your height (cm) or press Enter to skip: ").strip()
+        if not height_input:
+            break
         try:
-            height = float(input("Enter your height (cm): "))
+            height = float(height_input)
             if 100 <= height <= 220:
                 user_data['Height'] = height
                 break
             else:
                 print("Please enter a valid height between 100 and 220 cm.")
         except ValueError:
-            print("Invalid input. Please enter a number.")
+            print("Please enter a valid number for height.")
 
-    # Get weight input
+    # Get weight input with validation
     while True:
+        weight_input = input("Enter your weight (kg) or press Enter to skip: ").strip()
+        if not weight_input:
+            break
         try:
-            weight = float(input("Enter your weight (kg): "))
+            weight = float(weight_input)
             if 30 <= weight <= 250:
                 user_data['Weight'] = weight
                 break
             else:
                 print("Please enter a valid weight between 30 and 250 kg.")
         except ValueError:
-            print("Invalid input. Please enter a number.")
+            print("Please enter a valid number for weight.")
 
-    # Calculate BMI automatically
-    bmi = weight / ((height / 100) ** 2)
-    user_data['BMI'] = bmi
-    print(f"Your calculated BMI is: {bmi:.2f}")
+    # Calculate BMI if possible
+    if 'Height' in user_data and 'Weight' in user_data:
+        bmi = user_data['Weight'] / ((user_data['Height'] / 100) ** 2)
+        user_data['BMI'] = bmi
+        print(f"Your calculated BMI is: {bmi:.2f}")
 
-    # Health conditions
+        # Set BMI Level based on calculated BMI
+        if bmi < 18.5:
+            user_data['BMI Level'] = 'Underweight'
+        elif bmi < 25:
+            user_data['BMI Level'] = 'Normal'
+        elif bmi < 30:
+            user_data['BMI Level'] = 'Overweight'
+        else:
+            user_data['BMI Level'] = 'Obese'
+        print(f"Your BMI category: {user_data['BMI Level']}")
+
+    # Health conditions with validation
     while True:
-        hypertension = input("Do you have hypertension (Yes/No)? ").strip().capitalize()
-        if hypertension in ['Yes', 'No']:
-            user_data['Hypertension'] = 1 if hypertension == 'Yes' else 0
+        hypertension = input("Do you have hypertension (Yes/No) or press Enter to skip: ").strip().capitalize()
+        if not hypertension or hypertension in ['Yes', 'No']:
+            if hypertension == 'Yes':
+                user_data['Hypertension'] = 1
+            elif hypertension == 'No':
+                user_data['Hypertension'] = 0
             break
         else:
-            print("Invalid input. Please enter 'Yes' or 'No'.")
+            print("Please enter Yes or No for hypertension.")
 
     while True:
-        diabetes = input("Do you have diabetes (Yes/No)? ").strip().capitalize()
-        if diabetes in ['Yes', 'No']:
-            user_data['Diabetes'] = 1 if diabetes == 'Yes' else 0
+        diabetes = input("Do you have diabetes (Yes/No) or press Enter to skip: ").strip().capitalize()
+        if not diabetes or diabetes in ['Yes', 'No']:
+            if diabetes == 'Yes':
+                user_data['Diabetes'] = 1
+            elif diabetes == 'No':
+                user_data['Diabetes'] = 0
             break
         else:
-            print("Invalid input. Please enter 'Yes' or 'No'.")
+            print("Please enter Yes or No for diabetes.")
 
     # Fitness goals
     print("\nFitness Goals:")
     print("1. Weight Loss")
-    print("2. Muscle Gain")
-    print("3. Cardiovascular Health")
-    print("4. Flexibility")
-    print("5. General Fitness")
+    print("2. Weight Gain")
+    print("3. Muscular Fitness")
+    print("4. Overall Health")
 
     goals = {
         '1': 'Weight Loss',
-        '2': 'Muscle Gain',
-        '3': 'Cardiovascular Health',
-        '4': 'Flexibility',
-        '5': 'General Fitness'
+        '2': 'Weight Gain',
+        '3': 'Muscular Fitness',
+        '4': 'Overall Health'
     }
 
     while True:
-        goal_choice = input("Choose your fitness goal (1-5): ").strip()
+        goal_choice = input("Choose your fitness goal (1-4) or press Enter to skip: ").strip()
+        if not goal_choice:
+            break
         if goal_choice in goals:
             user_data['Fitness Goal'] = goals[goal_choice]
             break
         else:
-            print("Invalid choice. Please enter a number between 1 and 5.")
+            print("Please enter a number between 1 and 4.")
 
-    # Fitness types
-    print("\nPreferred Exercise Type:")
-    print("1. Cardio")
-    print("2. Strength Training")
-    print("3. Yoga/Pilates")
-    print("4. HIIT")
-    print("5. Mixed")
+    # Validate if we have enough data
+    required_fields = ['Age', 'Height', 'Weight']
+    missing_fields = [field for field in required_fields if field not in user_data]
 
-    types = {
-        '1': 'Cardio Fitness',
-        '2': 'Muscular Fitness',
-        '3': 'Yoga/Pilates',
-        '4': 'HIIT',
-        '5': 'Mixed'
-    }
-
-    while True:
-        type_choice = input("Choose your preferred exercise type (1-5): ").strip()
-        if type_choice in types:
-            user_data['Fitness Type'] = types[type_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 5.")
-
-    # Add BMI Level based on calculated BMI
-    if bmi < 18.5:
-        user_data['BMI Level'] = 'Underweight'
-    elif bmi < 25:
-        user_data['BMI Level'] = 'Normal'
-    elif bmi < 30:
-        user_data['BMI Level'] = 'Overweight'
-    else:
-        user_data['BMI Level'] = 'Obese'
+    if missing_fields:
+        print(f"\nWarning: Missing recommended data: {', '.join(missing_fields)}")
+        print("Recommendations may be less accurate without this information.")
+        proceed = input("Would you like to continue anyway? (Yes/No): ").strip().lower()
+        if proceed != 'yes':
+            print("Please try again with more complete information.")
+            return get_user_input()
 
     return user_data
 
 
-def build_recommendation_system(data_path):
-    # Phase 1: Data loading and cleaning
-    df = load_and_clean_data(data_path)
+# Function to format the final recommendation for display
+def format_personalized_recommendation(recommendation, explanation):
+    """Format the recommendation for display."""
+    if not recommendation:
+        return "Unable to generate a recommendation with the provided data."
 
-    # Phase 2: Feature engineering
-    df = feature_engineering(df)
+    formatted = "\n===== PERSONALIZED FITNESS RECOMMENDATION =====\n\n"
+    formatted += explanation + "\n"
 
-    # Phase 3: Model development
-    X_train, X_test, y_train, y_test = prepare_training_data(df)
-    if X_train is None:
-        return None, None
+    if 'Exercises' in recommendation and recommendation['Exercises']:
+        formatted += "EXERCISE PLAN:\n"
+        formatted += f"{recommendation['Exercises']}\n\n"
 
-    model = train_model(X_train, y_train)
-    accuracy, feature_importance = evaluate_model(model, X_test, y_test)
+    if 'Equipment' in recommendation and recommendation['Equipment']:
+        formatted += "RECOMMENDED EQUIPMENT:\n"
+        formatted += f"{recommendation['Equipment']}\n\n"
 
-    # Return model and feature names for use in the recommendation pipeline
-    return model, X_train.columns.tolist()
+    formatted += "PERSONALIZED NUTRITION PLAN:\n"
+
+    if 'Diet (Vegetable)' in recommendation and recommendation['Diet (Vegetable)']:
+        formatted += f"Vegetables: {recommendation['Diet (Vegetable)']}\n"
+
+    if 'Diet (protein intake)' in recommendation and recommendation['Diet (protein intake)']:
+        formatted += f"Protein: {recommendation['Diet (protein intake)']}\n"
+
+    if 'Diet (Juice)' in recommendation and recommendation['Diet (Juice)']:
+        formatted += f"Juice: {recommendation['Diet (Juice)']}\n\n"
+
+    if 'Recommendation' in recommendation and recommendation['Recommendation']:
+        formatted += "GENERAL ADVICE:\n"
+        formatted += f"{recommendation['Recommendation']}\n\n"
+
+    return formatted
 
 
-def get_recommendation_for_user(model, feature_names, user_data):
-    recommendation, confidence = generate_recommendations(model, user_data, feature_names)
-    explanation = explain_recommendation(recommendation, user_data)
-    warnings = safety_check(recommendation, user_data)
+def main():
+    """Main function to run the fitness recommendation system."""
+    print("====== FITNESS RECOMMENDATION SYSTEM ======\n")
 
-    result = {
-        'recommendation': recommendation,
-        'confidence': confidence,
-        'explanation': explanation,
-        'warnings': warnings
-    }
+    try:
+        # Check if the dataset directory exists
+        dataset_dir = "./Dataset"
+        if not os.path.exists(dataset_dir):
+            os.makedirs(dataset_dir)
+            print(f"Created directory {dataset_dir}")
 
-    return result
+        # File path
+        file_path = "Dataset/gym_recommendation.csv"
+
+        # Check if the file exists
+        if not os.path.isfile(file_path):
+            print(f"File not found: {file_path}")
+            # Try to find any CSV file in the Dataset directory
+            csv_files = [f for f in os.listdir(dataset_dir) if f.endswith('.csv')]
+
+            if csv_files:
+                file_path = os.path.join(dataset_dir, csv_files[0])
+                print(f"Using alternative file: {file_path}")
+            else:
+                print("No CSV files found in the Dataset directory.")
+                file_path = input("Please enter the full path to your CSV file: ").strip()
+                if not os.path.isfile(file_path):
+                    print("Invalid file path. Exiting program.")
+                    sys.exit(1)
+
+        # Load the data
+        df = load_and_explore_data(file_path)
+        if df is None:
+            print("Failed to load data. Exiting program.")
+            sys.exit(1)
+
+        # Feature engineering
+        df_processed = feature_engineering(df)
+        if df_processed is None:
+            print("Feature engineering failed. Exiting program.")
+            sys.exit(1)
+
+        # Prepare data for KNN
+        X_scaled, features, scaler = prepare_data_for_knn(df_processed)
+        if X_scaled is None:
+            print("Data preparation failed. Exiting program.")
+            sys.exit(1)
+
+        # Train KNN model
+        knn_model = train_knn_model(X_scaled, n_neighbors=3)
+        if knn_model is None:
+            print("Model training failed. Exiting program.")
+            sys.exit(1)
+
+        print("\nRecommendation system successfully built!")
+
+        while True:
+            # Get user input
+            print("\nLet's create a personalized fitness recommendation for you.")
+            user_data = get_user_input()
+
+            # Generate recommendations
+            recommendations = generate_knn_recommendations(knn_model, user_data, features, scaler)
+
+            if recommendations:
+                personalized_rec = generate_personalized_recommendation(recommendations, user_data)
+                explanation = explain_personalized_recommendation(personalized_rec, user_data)
+
+                # Display recommendation
+                formatted_rec = format_personalized_recommendation(personalized_rec, explanation)
+                print(formatted_rec)
+
+                # Show nearest neighbors for transparency
+                print("\nSimilar profiles used for your recommendation:")
+                for i, rec in enumerate(recommendations):
+                    print(f"{i + 1}. Profile #{rec['Profile ID']} (Similarity: {rec['Similarity']:.2f})")
+            else:
+                print("Unable to generate recommendations. Please check your input data.")
+
+            # Ask if user wants to try again
+            retry = input("\nWould you like to try again with different information? (Yes/No): ").strip().lower()
+            if retry != 'yes':
+                break
+
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
-# Main execution block
 if __name__ == "__main__":
-    # Example path - replace with your actual file path
-    data_path = "./Dataset/gym recommendation (1).csv"
-
-    # Build the recommendation system
-    model, feature_names = build_recommendation_system(data_path)
-
-    if model is not None:
-        # Get user input
-        user_data = get_user_input()
-
-        # Get recommendation
-        result = get_recommendation_for_user(model, feature_names, user_data)
-
-        # Display results
-        print("\nRecommendation Results:")
-        print("=====================")
-        print(f"Recommendation: {result['recommendation']}")
-        print(f"Confidence: {result['confidence']:.2f}")
-        print(f"\nExplanation:\n{result['explanation']}")
-
-        if result['warnings']:
-            print("\nWarnings:")
-            for warning in result['warnings']:
-                print(f"- {warning}")
-    else:
-        print("Failed to build recommendation system. Please check your data.")
+    main()
