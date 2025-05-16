@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FitGenius - Personalized Fitness Recommendations</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <h1>FitGenius</h1>
+            </div>
+            <nav>
+                <ul>
+                    <li><a href="{{ url_for('index') }}" class="active">Home</a></li>
+                    <li><a href="{{ url_for('form') }}">Get Recommendations</a></li>
+                    
+                </ul>
+            </nav>
+        </header>
+
+        <main class="homepage">
+            <section class="hero">
+                <div class="hero-content">
+                    <h1>Your AI Fitness Coach</h1>
+                    <p>Get personalized workout and nutrition recommendations based on your unique profile and health goals.</p>
+                    <a href="{{ url_for('form') }}" class="btn btn-primary">Get Started</a>
+                </div>
+                <div class="hero-image">
+                    <img src="../static/assets/mainImage.png" alt="Fitness Illustration">
+                </div>
+            </section>
+
+            <section class="features">
+                <h2>How FitGenius Works</h2>
+                <div class="feature-cards">
+                    <div class="card">
+                        <div class="card-icon">1</div>
+                        <h3>Share Your Profile</h3>
+                        <p>Enter your basic information, health data, and fitness goals.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">2</div>
+                        <h3>AI Analysis</h3>
+                        <p>Our system analyzes your data and finds similar fitness profiles.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">3</div>
+                        <h3>Get Personalized Plan</h3>
+                        <p>Receive custom exercise, equipment, and diet recommendations.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="cta">
+                <h2>Ready to Transform Your Fitness Journey?</h2>
+                <p>Get science-backed recommendations tailored specifically for you.</p>
+                <a href="{{ url_for('form') }}" class="btn btn-secondary">Get Your Fitness Plan</a>
+            </section>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 FitGenius. All rights reserved.</p>
+        </footer>
+    </div>
+</body>
+</html></title>
+</head>
+<body>
+
+</body>
+</html>

@@ -4,7 +4,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
 import os
-import sys
+
 
 app = Flask(__name__)
 app.secret_key = 'fitness_recommendation_secret_key'
@@ -463,16 +463,16 @@ def explain_personalized_recommendation(recommendation, user_data):
 
 
 # Initialize the model when app starts
+# Initialize the model when app starts
 def initialize_model():
     global knn_model, features, scaler, original_df
 
-    # Define path to dataset
-    dataset_dir = "./static/dataset"
+    # Define path to dataset - corrected path
+    dataset_dir = os.path.join("static", "dataset")
     if not os.path.exists(dataset_dir):
         os.makedirs(dataset_dir)
         app.logger.info(f"Created directory {dataset_dir}")
 
-    # File path
     file_path = os.path.join(dataset_dir, "gym_recommendation.csv")
 
     # Check if file exists
@@ -487,6 +487,9 @@ def initialize_model():
         else:
             app.logger.error("No CSV files found in the dataset directory.")
             return False
+
+    # Log the file that will be used
+    app.logger.info(f"Loading dataset from: {file_path}")
 
     # Load the data
     df = load_and_explore_data(file_path)
@@ -520,7 +523,6 @@ def initialize_model():
     app.logger.info("Recommendation system successfully initialized!")
     return True
 
-
 # Route for the home page
 @app.route('/', methods=['GET'])
 def index():
@@ -533,6 +535,8 @@ def form():
     return render_template('form.html')
 
 
+# Route to process form submission and display results
+@app.route('/recommend', methods=['POST'])
 # Route to process form submission and display results
 @app.route('/recommend', methods=['POST'])
 def recommend():
@@ -599,28 +603,60 @@ def recommend():
             personalized_rec = generate_personalized_recommendation(recommendations, user_data)
             explanation = explain_personalized_recommendation(personalized_rec, user_data)
 
-            # Store recommendation in session
-            session['recommendation'] = personalized_rec
+            # Convert any numpy types to native Python types for JSON serialization
+            def convert_numpy_types(obj):
+                if isinstance(obj, dict):
+                    return {k: convert_numpy_types(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(item) for item in obj]
+                elif hasattr(obj, 'dtype') and hasattr(obj, 'tolist'):  # Check if it's a numpy type
+                    return obj.tolist()
+                elif hasattr(obj, 'item'):  # For numpy scalar types
+                    return obj.item()
+                else:
+                    return obj
+
+            # Convert all numpy types in data to Python native types
+            personalized_rec_safe = convert_numpy_types(personalized_rec)
+
+            # Create properly formatted similar profiles with Python native types
+            similar_profiles = []
+            for rec in recommendations:
+                profile_id = rec['Profile ID']
+                similarity = rec['Similarity']
+
+                # Convert numpy types if needed
+                if hasattr(profile_id, 'item'):
+                    profile_id = profile_id.item()
+                if hasattr(similarity, 'item'):
+                    similarity = similarity.item()
+
+                # Format similarity as a string with 2 decimal places
+                similarity_str = f"{float(similarity):.2f}"
+
+                similar_profiles.append({
+                    'id': profile_id,
+                    'similarity': similarity_str
+                })
+
+            # Store session data
+            session['recommendation'] = personalized_rec_safe
             session['explanation'] = explanation
-            session['similar_profiles'] = [
-                {'id': rec['Profile ID'], 'similarity': f"{rec['Similarity']:.2f}"}
-                for rec in recommendations
-            ]
+            session['similar_profiles'] = similar_profiles
 
             return render_template(
                 'recommendation.html',
-                recommendation=personalized_rec,
+                recommendation=personalized_rec_safe,
                 explanation=explanation,
-                similar_profiles=session['similar_profiles'],
+                similar_profiles=similar_profiles,
                 user_data=user_data
             )
         else:
             flash('Unable to generate recommendations. Please check your input data.', 'error')
             return redirect(url_for('form'))
 
-
 if __name__ == '__main__':
-    # Create necessary directories
+    # Create necessary directories if they don't exist
     os.makedirs('templates', exist_ok=True)
     os.makedirs('static', exist_ok=True)
     os.makedirs('static/css', exist_ok=True)

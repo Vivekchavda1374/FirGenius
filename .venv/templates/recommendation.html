@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Fitness Recommendation</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Your Personalized Fitness Plan</h1>
+            <p>Here's a custom fitness plan based on your profile and health information.</p>
+        </header>
+
+        <div class="explanation-section">
+            <h2>Why This Plan Works For You</h2>
+            <div class="explanation-content">
+                {{ explanation|safe }}
+            </div>
+        </div>
+
+        <div class="recommendation-section">
+            <h2>Your Fitness Plan</h2>
+            <div class="plan-cards">
+                {% if recommendation %}
+                    {% if recommendation.get('Exercises') %}
+                    <div class="plan-card">
+                        <h3>Exercise Recommendations</h3>
+                        <p>{{ recommendation.get('Exercises') }}</p>
+                    </div>
+                    {% endif %}
+
+                    {% if recommendation.get('Equipment') %}
+                    <div class="plan-card">
+                        <h3>Recommended Equipment</h3>
+                        <p>{{ recommendation.get('Equipment') }}</p>
+                    </div>
+                    {% endif %}
+
+                    {% if recommendation.get('Diet (Vegetable)') %}
+                    <div class="plan-card">
+                        <h3>Vegetable Recommendations</h3>
+                        <p>{{ recommendation.get('Diet (Vegetable)') }}</p>
+                    </div>
+                    {% endif %}
+
+                    {% if recommendation.get('Diet (protein intake)') %}
+                    <div class="plan-card">
+                        <h3>Protein Recommendations</h3>
+                        <p>{{ recommendation.get('Diet (protein intake)') }}</p>
+                    </div>
+                    {% endif %}
+
+                    {% if recommendation.get('Diet (Juice)') %}
+                    <div class="plan-card">
+                        <h3>Beverage Recommendations</h3>
+                        <p>{{ recommendation.get('Diet (Juice)') }}</p>
+                    </div>
+                    {% endif %}
+
+                    {% if recommendation.get('Recommendation') %}
+                    <div class="plan-card">
+                        <h3>Additional Tips</h3>
+                        <p>{{ recommendation.get('Recommendation') }}</p>
+                    </div>
+                    {% endif %}
+                {% else %}
+                    <p>No recommendations available at this time.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="similar-profiles-section">
+            <h2>Similar Profiles</h2>
+            <p>Your recommendations were built based on these similar fitness profiles:</p>
+            <ul class="similar-profiles-list">
+                {% for profile in similar_profiles %}
+                    <li>Profile #{{ profile.id }} ({% if profile.similarity is string %}{{ profile.similarity }}{% else %}{{ (profile.similarity * 100)|round|int }}{% endif %}% match)</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <div class="action-buttons">
+            <a href="{{ url_for('form') }}" class="button">Try Again</a>
+            <a href="{{ url_for('index') }}" class="button">Home</a>
+        </div>
+    </div>
+</body>
+</html>
