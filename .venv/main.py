@@ -15,6 +15,9 @@ knn_model = None
 features = None
 scaler = None
 
+# Initialize model at startup
+model_initialized = False
+
 
 # PHASE 1: LOAD DATA, EXPLORE AND CLEAN DATASET
 def load_and_explore_data(file_path):
@@ -322,14 +325,25 @@ def preprocess_user_for_knn(user_data, features, scaler):
 # Generate recommendations using KNN
 def generate_knn_recommendations(knn_model, user_data, features, scaler, n_recommendations=3):
     """Generate fitness recommendations based on similar profiles."""
-    if knn_model is None or user_data is None:
-        app.logger.error("Missing model or user data for recommendations")
+    if knn_model is None:
+        app.logger.error("KNN model is not initialized")
+        return []
+    
+    if user_data is None:
+        app.logger.error("User data is empty or invalid")
+        return []
+
+    if features is None or scaler is None:
+        app.logger.error("Missing model components (features or scaler)")
         return []
 
     app.logger.info("Finding similar profiles for recommendations...")
+    app.logger.info(f"User data: {user_data}")
+    
     user_vector = preprocess_user_for_knn(user_data, features, scaler)
 
     if user_vector is None:
+        app.logger.error("Failed to preprocess user data")
         return []
 
     try:
@@ -463,30 +477,26 @@ def explain_personalized_recommendation(recommendation, user_data):
 
 
 # Initialize the model when app starts
-# Initialize the model when app starts
 def initialize_model():
     global knn_model, features, scaler, original_df
 
-    # Define path to dataset - corrected path
-    dataset_dir = os.path.join("static", "dataset")
-    if not os.path.exists(dataset_dir):
-        os.makedirs(dataset_dir)
-        app.logger.info(f"Created directory {dataset_dir}")
-
-    file_path = os.path.join(dataset_dir, "gym_recommendation.csv")
-
-    # Check if file exists
-    if not os.path.isfile(file_path):
-        app.logger.warning(f"File not found: {file_path}")
-        # Try to find any CSV file in the dataset directory
-        csv_files = [f for f in os.listdir(dataset_dir) if f.endswith('.csv')]
-
-        if csv_files:
-            file_path = os.path.join(dataset_dir, csv_files[0])
-            app.logger.info(f"Using alternative file: {file_path}")
-        else:
-            app.logger.error("No CSV files found in the dataset directory.")
-            return False
+    # Define possible dataset locations
+    possible_locations = [
+        os.path.join("static", "dataset", "gym_recommendation.csv"),
+        os.path.join("static", "dataset"),
+        os.path.join("dataset", "gym_recommendation.csv"),
+        os.path.join("dataset"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dataset", "gym_recommendation.csv"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dataset"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "dataset")
+    ]
+    
+    # Search for CSV files in possible locations
+    file_path = find_dataset(possible_locations)
+    
+    if not file_path:
+        app.logger.error("No CSV dataset found in any of the expected locations.")
+        return False
 
     # Log the file that will be used
     app.logger.info(f"Loading dataset from: {file_path}")
@@ -523,23 +533,78 @@ def initialize_model():
     app.logger.info("Recommendation system successfully initialized!")
     return True
 
+def find_dataset(locations):
+    """
+    Search for a CSV dataset in multiple possible locations.
+    Returns the path to the first valid CSV file found, or None if no CSV is found.
+    """
+    # First check for specific files
+    for location in locations:
+        if os.path.isfile(location) and location.endswith('.csv'):
+            app.logger.info(f"Found dataset at: {location}")
+            return location
+    
+    # Then check directories for any CSV file
+    for location in locations:
+        if os.path.isdir(location):
+            app.logger.info(f"Searching for CSV files in: {location}")
+            csv_files = [os.path.join(location, f) for f in os.listdir(location) 
+                        if f.endswith('.csv') and os.path.isfile(os.path.join(location, f))]
+            
+            if csv_files:
+                app.logger.info(f"Found {len(csv_files)} CSV files in {location}")
+                # Return the first CSV file found
+                return csv_files[0]
+    
+    # Create directory if none exists
+    default_dir = os.path.join("static", "dataset")
+    if not os.path.exists(default_dir):
+        os.makedirs(default_dir, exist_ok=True)
+        app.logger.info(f"Created dataset directory at: {default_dir}")
+    
+    return None
+
+# Remove the deprecated @app.before_first_request decorator
+# Instead, add a function to initialize the model
+def try_initialize_model():
+    """Initialize model if not already initialized."""
+    global model_initialized, knn_model, features, scaler
+    if not model_initialized:
+        model_initialized = initialize_model()
+        if model_initialized:
+            app.logger.info("Model initialized successfully")
+        else:
+            app.logger.error("Failed to initialize model")
+    return model_initialized
+
 # Route for the home page
 @app.route('/', methods=['GET'])
 def index():
+    # Try to initialize model when the first page is loaded
+    try_initialize_model()
     return render_template('index.html')
 
 
 # Route for the user input form
 @app.route('/form', methods=['GET'])
 def form():
+    # Ensure model is initialized when form page is loaded
+    try_initialize_model()
     return render_template('form.html')
 
 
 # Route to process form submission and display results
 @app.route('/recommend', methods=['POST'])
-# Route to process form submission and display results
-@app.route('/recommend', methods=['POST'])
 def recommend():
+    global knn_model, features, scaler
+    
+    # Check if model is initialized
+    if knn_model is None or features is None or scaler is None:
+        app.logger.error("Model components are not initialized. Trying to initialize now...")
+        if not try_initialize_model():
+            flash('The recommendation system is not ready. Please try again later.', 'error')
+            return redirect(url_for('form'))
+    
     if request.method == 'POST':
         # Extract user data from form
         user_data = {}
@@ -554,15 +619,26 @@ def recommend():
         if age and age.isdigit():
             user_data['Age'] = int(age)
 
-        # Get height
+        # Get height - handle decimal values
         height = request.form.get('height')
-        if height and height.replace('.', '', 1).isdigit():
-            user_data['Height'] = float(height)
+        if height:
+            try:
+                height_value = float(height)
+                # Automatically convert from meters to cm if height is in meters (less than 3)
+                if height_value < 3:
+                    height_value = height_value * 100
+                    app.logger.info(f"Converted height from meters ({height}) to centimeters ({height_value})")
+                user_data['Height'] = height_value
+            except ValueError:
+                app.logger.warning(f"Invalid height value: {height}")
 
-        # Get weight
+        # Get weight - handle decimal values
         weight = request.form.get('weight')
-        if weight and weight.replace('.', '', 1).isdigit():
-            user_data['Weight'] = float(weight)
+        if weight:
+            try:
+                user_data['Weight'] = float(weight)
+            except ValueError:
+                app.logger.warning(f"Invalid weight value: {weight}")
 
         # Calculate BMI if possible
         if 'Height' in user_data and 'Weight' in user_data:
